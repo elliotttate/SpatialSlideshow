@@ -9,12 +9,12 @@ final class SlideshowModel: ObservableObject {
     @Published var motion = UserDefaults.standard.object(forKey: "motion") as? Double ?? 1.8 { didSet { UserDefaults.standard.set(motion, forKey: "motion") } }
     @Published var framing = FramingMode(rawValue: UserDefaults.standard.string(forKey: "framing") ?? "fit") ?? .fit { didSet { UserDefaults.standard.set(framing.rawValue, forKey: "framing") } }
     @Published var motionStyle = MotionStyle(rawValue: UserDefaults.standard.object(forKey: "motionStyle") as? Int ?? -1) ?? .varied { didSet { UserDefaults.standard.set(motionStyle.rawValue, forKey: "motionStyle") } }
-    @Published var photoVersion = PhotoVersion(rawValue: UserDefaults.standard.string(forKey: "photoVersion") ?? "current") ?? .current { didSet { UserDefaults.standard.set(photoVersion.rawValue, forKey: "photoVersion") } }
+    @Published var photoVersion = PhotoVersion(rawValue: UserDefaults.standard.string(forKey: "photoVersion") ?? "original") ?? .original { didSet { UserDefaults.standard.set(photoVersion.rawValue, forKey: "photoVersion") } }
     @Published var expandPhotoEdges = UserDefaults.standard.bool(forKey: "expandPhotoEdges") { didSet { UserDefaults.standard.set(expandPhotoEdges, forKey: "expandPhotoEdges") } }
     @Published var expansionPercent = min(20, max(1, UserDefaults.standard.object(forKey: "expansionPercent") as? Int ?? 5)) { didSet { UserDefaults.standard.set(expansionPercent, forKey: "expansionPercent") } }
     @Published var expansionZoomOutPercent = min(40, max(0, UserDefaults.standard.object(forKey: "expansionZoomOutPercent") as? Int ?? 0)) { didSet { UserDefaults.standard.set(expansionZoomOutPercent, forKey: "expansionZoomOutPercent") } }
     var effectiveExpansionZoomOutPercent: Int { min(expansionPercent * 2, expansionZoomOutPercent) }
-    @Published var outputLongEdge = UserDefaults.standard.object(forKey: "outputLongEdge") as? Int ?? 1920 { didSet { UserDefaults.standard.set(outputLongEdge, forKey: "outputLongEdge") } }
+    @Published var outputLongEdge = UserDefaults.standard.object(forKey: "outputLongEdge") as? Int ?? 3840 { didSet { UserDefaults.standard.set(outputLongEdge, forKey: "outputLongEdge") } }
     @Published var crossfade = UserDefaults.standard.object(forKey: "crossfade") as? Bool ?? true { didSet { UserDefaults.standard.set(crossfade, forKey: "crossfade"); playback.transitionDuration = crossfade ? 0.8 : 0 } }
     @Published var shuffleAlbum = UserDefaults.standard.object(forKey: "shuffleAlbum") as? Bool ?? true { didSet { UserDefaults.standard.set(shuffleAlbum, forKey: "shuffleAlbum") } }
     @Published var includeVideos = UserDefaults.standard.bool(forKey: "includeVideos") { didSet { UserDefaults.standard.set(includeVideos, forKey: "includeVideos") } }

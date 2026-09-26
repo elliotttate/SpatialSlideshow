@@ -35,7 +35,7 @@ The app prepares photos while playing or paused, with up to three original downl
 - **Photo quality:** full-quality latest edits or full-quality unedited originals, both with iCloud downloads; 1920 or 3840 pixels on the output's long edge.
 - **Music:** local audio playlist, play/pause, skip, volume, and repeat. Music is played live and is not mixed into exported MP4s.
 
-New installations start with **9 seconds, Strong motion, Varied movement, Fit with Black Bars, shuffle and fades on, current full-quality photos at 1920 pixels**, and videos and expansion off. Existing saved preferences are retained. Enabling expansion starts with 5% per edge and no extra zoom-out allowance unless those values were previously changed.
+New installations start with **9 seconds, Strong motion, Varied movement, Fit with Black Bars, shuffle and fades on, full-quality unedited originals at 3840 pixels**, and videos and expansion off. Existing saved preferences are retained. Enabling expansion starts with 5% per edge and no extra zoom-out allowance unless those values were previously changed.
 
 Settings save automatically. Framing, album fades, and sound update live. Motion, expansion, source quality, and album changes apply on the next play; **Restart Album** or **Rebuild Slideshow** applies them immediately. File slideshows bake in their framing and fades. **Save MP4** exports a built file slideshow; a streaming Photos album currently has no combined export.
 
