@@ -1,0 +1,21 @@
+// swift-interface-format-version: 1.0
+// swift-compiler-version: Apple Swift version 6.3
+// swift-module-flags: -enable-library-evolution -module-name PhotosGenerativeServices
+import Foundation
+import CoreImage
+import CoreML
+import ImageIO
+
+// Resilient declaration: the installed framework owns layout and implementation.
+// Signatures are taken from that framework's exported Swift symbols.
+public struct InpaintGANPipeline {
+  public init(cleanupModel: CoreML.MLModel)
+  public var cleanupModel: CoreML.MLModel { get set }
+  public var refinementModel: CoreML.MLModel? { get set }
+  public func renderTile(context: CoreImage.CIContext,
+                         inputImage: CoreImage.CIImage,
+                         maskImage: CoreImage.CIImage,
+                         exclusionMaskImage: CoreImage.CIImage?,
+                         orientation: ImageIO.CGImagePropertyOrientation,
+                         shouldDilateMask: Swift.Bool) throws -> CoreImage.CIImage
+}

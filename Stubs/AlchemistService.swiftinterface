@@ -1,0 +1,37 @@
+// swift-interface-format-version: 1.0
+// swift-compiler-version: Apple Swift version 6.3
+// swift-module-flags: -enable-library-evolution -module-name AlchemistService
+import Foundation
+import CoreImage
+import Metal
+import NativeScene
+public enum ALCConfigurationPreset {
+ case standard, photosApp, photosWidget, stereoGeneration, pano, panoEnvironment, panoEnvironmentMVP, reframing
+}
+public struct ALCConfiguration {
+ public init()
+ public init(for: AlchemistService.ALCConfigurationPreset)
+}
+public protocol ALCIntermediateOutput {}
+public class ALCService {
+ public enum GenerationEvent {
+  case starting
+  case progress(Swift.UInt, Swift.UInt)
+  case finished
+  case failed
+  public var progressValue: Swift.Double { get }
+ }
+ public enum GenerationOption: Swift.Hashable {
+  case custom(Swift.String)
+  case focalLengthPx, forceInProcess, requestGaussians, requestedGaussiansInCameraSpace, clientName
+  public func hash(into: inout Swift.Hasher)
+  public static func == (_ a: AlchemistService.ALCService.GenerationOption, _ b: AlchemistService.ALCService.GenerationOption) -> Swift.Bool
+ }
+ public struct GenerationResult {
+  public var mxi: NativeScene.MXIScene? { get }
+  public var gaussians: NativeScene.GSAsset? { get }
+ }
+ public init(mtlDevice: any Metal.MTLDevice, configuration: AlchemistService.ALCConfiguration, eventHandler: ((AlchemistService.ALCService.GenerationEvent, AlchemistService.ALCIntermediateOutput?) -> Swift.Bool)?) throws
+ public func generateRequested(from: CoreImage.CIImage, with: AlchemistService.ALCConfiguration, options: [AlchemistService.ALCService.GenerationOption: Any]?) async throws -> AlchemistService.ALCService.GenerationResult
+ public func generate(from: CoreImage.CIImage, with: AlchemistService.ALCConfiguration, options: [AlchemistService.ALCService.GenerationOption: Any]?) async throws -> NativeScene.MXIScene
+}
