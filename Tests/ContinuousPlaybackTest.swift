@@ -86,6 +86,17 @@ struct ContinuousPlaybackTest {
         playback.onRepeat = { _ in playback.stop() }
         pump(1.2)
         precondition(playback.player.currentItem == nil && playback.player.rate == 0, "Cancellation during rewind must not restart playback")
-        print("PASS delayed successor, frame retention, pause, looping, cancellation")
+        playback.stop()
+        items = []; var failedItems = 0
+        playback.onItem = { items.append($0) }; playback.onFailure = { _ in failedItems += 1 }
+        playback.onRepeat = { _ in }
+        playback.begin()
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("missing-\(UUID().uuidString).mp4")
+        playback.addPreparedReplays([(missing, 99)])
+        playback.append(clip, number: 100)
+        pump(2)
+        precondition(failedItems == 1 && items == [100], "Bad startup cache reports one failure and advances to valid item")
+        playback.stop()
+        print("PASS delayed successor, frame retention, pause, looping, cancellation and failed startup cache")
     }
 }

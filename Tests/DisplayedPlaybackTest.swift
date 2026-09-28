@@ -96,6 +96,8 @@ enum DisplayedPlaybackTest {
         for (name, passed) in seeded.checks { checks[name] = passed }
         let variants = try exerciseRefreshedVariants(playback: playback, oldClip: first)
         for (name, passed) in variants.checks { checks[name] = passed }
+        let fairness = exerciseUnseenPriority(playback: playback, clip: first)
+        for (name, passed) in fairness.checks { checks[name] = passed }
         let passed = checks.values.allSatisfy { $0 }
         let report: [String: Any] = [
             "passed": passed,
@@ -113,6 +115,7 @@ enum DisplayedPlaybackTest {
             "preparedPhotoHistory": waiting.report,
             "seededPhotoHistory": seeded.report,
             "refreshedCacheVariants": variants.report,
+            "unseenPriority": fairness.report,
             "observations": observations
         ]
         try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: reportURL)
@@ -129,22 +132,112 @@ enum DisplayedPlaybackTest {
         try FileManager.default.copyItem(at: oldClip, to: freshClip)
         defer { playback.stop(); try? FileManager.default.removeItem(at: freshClip) }
         var replayed: [Int] = [], usedFreshVariants = true
+        var installed = false
+        var freshItems: [Int] = []
         playback.onReplay = { number in
+            // Updating an already viewed item must refresh its future replay
+            // without forcing it back into the unseen-photo queue.
+            guard installed else { return }
             replayed.append(number)
             usedFreshVariants = usedFreshVariants && (playback.player.currentItem?.asset as? AVURLAsset)?.url == freshClip
         }
-        playback.onItem = { _ in }
+        playback.onItem = { freshItems.append($0) }
         playback.onRepeat = { _ in }
         playback.begin()
         playback.addPreparedReplays([(oldClip, 300), (oldClip, 301)])
         playback.append(freshClip, number: 300)
         playback.append(freshClip, number: 301)
+        installed = true
         let deadline = Date().addingTimeInterval(8)
         while Set(replayed).count < 2 && Date() < deadline { pump(0.02) }
         return ([
             "refreshed_cache_variants_replay_both_photos": Set(replayed) == Set([300, 301]),
+            "refreshed_seen_photo_is_not_queued_as_new": freshItems == [301],
             "refreshed_cache_variants_replace_older_waiting_renders": usedFreshVariants && !replayed.isEmpty
         ], ["replayedPhotos": replayed, "usedFreshVariants": usedFreshVariants])
+    }
+
+    static func exerciseUnseenPriority(playback: ContinuousPlayback, clip: URL)
+        -> (checks: [String: Bool], report: [String: Any]) {
+        var shown: [Int] = [], repeats: [Int] = [], failures: [String] = []
+        var finishes = 0
+        playback.onItem = { shown.append($0) }
+        playback.onReplay = { shown.append($0) }
+        playback.onRepeat = { repeats.append($0) }
+        playback.onFinished = { finishes += 1 }
+        playback.onFailure = { failures.append($0.localizedDescription) }
+        playback.onNavigation = nil
+        playback.transitionDuration = 0.15
+        func wait(_ predicate: () -> Bool) -> Bool {
+            let deadline = Date().addingTimeInterval(10)
+            while !predicate() && Date() < deadline { pump(0.02) }
+            return predicate()
+        }
+
+        // Reproduce startup from cache followed by the producer returning
+        // those same identities. The old code showed photo 0 twice in a row.
+        playback.begin()
+        playback.addPreparedReplays((0..<5).map { (clip, $0) })
+        for number in 0..<5 { playback.append(clip, number: number) }
+        playback.finishPreparing()
+        let finished = wait { finishes == 1 }
+        let startup = shown
+        var checks: [String: Bool] = [
+            "unseen_cached_startup_and_producer_show_each_photo_once": startup == Array(0..<5),
+            "unseen_cached_startup_finishes_without_repeats": finished && repeats.isEmpty
+        ]
+
+        // Ending production must still drain cached photos that have never
+        // appeared, even when they are not in the producer's pending queue.
+        shown = []; finishes = 0; repeats = []
+        playback.begin()
+        playback.addPreparedReplays((10..<14).map { (clip, $0) })
+        playback.finishPreparing()
+        let cachedFinished = wait { finishes == 1 }
+        let cachedOnly = shown
+        checks["unseen_cached_items_drain_before_finish"] = cachedFinished && shown.count == 4 && Set(shown) == Set(10..<14)
+
+        // Paused Next exercises the same selection policy with real ready
+        // layers, without waiting a full slideshow interval for every sample.
+        shown = []; finishes = 0; repeats = []
+        playback.begin()
+        playback.addPreparedReplays((20..<26).map { (clip, $0) })
+        playback.togglePlayback()
+        func next() -> Bool {
+            let count = shown.count
+            playback.nextPhoto()
+            return wait { shown.count > count && !playback.isTransitioning }
+        }
+        var advanced = true
+        for _ in 0..<5 { advanced = next() && advanced }
+        let firstPass = shown
+        for _ in 0..<12 {
+            // The producer catches up with a previously seen cached photo.
+            // Repeated registration must not reset the shuffle cycle.
+            if let current = playback.displayedNumber { playback.append(clip, number: current) }
+            playback.addPreparedReplays((20..<26).map { (clip, $0) })
+            advanced = next() && advanced
+        }
+        let rounds = Array(shown.dropFirst(6))
+        checks["unseen_first_cache_pass_has_no_duplicates"] = firstPass.count == 6 && Set(firstPass) == Set(20..<26)
+        checks["repeat_cycles_survive_producer_and_cache_updates"] = rounds.count == 12 &&
+            Set(rounds.prefix(6)) == Set(20..<26) && Set(rounds.suffix(6)) == Set(20..<26)
+        checks["repeat_cycles_avoid_adjacent_duplicates"] = zip(shown, shown.dropFirst()).allSatisfy { $0.0 != $0.1 }
+
+        // An unseen fresh item interrupts a speculative repeat. Displacing
+        // another unseen cached candidate must not consume or lose its turn.
+        playback.addPreparedReplays([(clip, 26), (clip, 27)])
+        playback.append(clip, number: 28)
+        let beforeNew = shown.count
+        for _ in 0..<3 { advanced = next() && advanced }
+        let arrivals = Array(shown.dropFirst(beforeNew))
+        checks["new_arrivals_preempt_repeats_without_losing_cached_turns"] = arrivals.first == 28 && Set(arrivals) == Set([26,27,28])
+        checks["selection_preserves_pause_and_frame"] = advanced && !playback.isPlaying && playback.player.currentItem != nil
+        checks["selection_has_no_player_failures"] = failures.isEmpty
+        playback.stop()
+        return (checks, ["cachedThenProducer": startup, "cachedOnly": cachedOnly,
+                         "firstPass": firstPass, "repeatRounds": rounds, "newArrivals": arrivals,
+                         "failures": failures])
     }
 
     static func exercisePreparedPhotoHistory(playback: ContinuousPlayback, first: URL, second: URL)
@@ -161,6 +254,8 @@ enum DisplayedPlaybackTest {
             print("HISTORY REPLAY", $0)
         }
         playback.onRepeat = { repeats.append($0); print("HISTORY REPEAT", $0) }
+        playback.onPlayingChanged = { print("HISTORY TRANSPORT", $0, playback.player.rate, playback.player.currentTime().seconds) }
+        playback.onPlaybackWait = { print("HISTORY READINESS", $0 ?? "ready") }
         playback.onFinished = { finishes += 1; print("HISTORY FINISHED") }
         playback.onFailure = { failures.append($0.localizedDescription); print("HISTORY FAILURE", $0) }
         playback.begin()
@@ -193,6 +288,7 @@ enum DisplayedPlaybackTest {
         var checks: [String: Bool] = [
             "history_initial_fresh_items_stay_in_order": freshWhileWaiting == [0, 1, 2],
             "history_wait_replays_multiple_prepared_photos": replayWhileWaiting.count >= 6 && Set(replayWhileWaiting).count == 3,
+            "history_first_two_repeat_rounds_cover_every_photo": replayWhileWaiting.count >= 6 && Set(replayWhileWaiting.prefix(3)) == Set(0...2) && Set(replayWhileWaiting.dropFirst(3).prefix(3)) == Set(0...2),
             "history_replays_only_current_album_prepared_items": replayWhileWaiting.allSatisfy { (0...2).contains($0) },
             "history_avoids_immediate_same_photo": zip(shownWhileWaiting, shownWhileWaiting.dropFirst()).allSatisfy { $0.0 != $0.1 },
             "history_replay_uses_multi_frame_fades": fallbackOpacitySamplesWhileWaiting >= 12,
@@ -253,7 +349,7 @@ enum DisplayedPlaybackTest {
         playback.begin()
         playback.addPreparedReplays([(second, 201), (first, 202)])
         pump(0.15)
-        let seededDoesNotAutoplay = freshItems.isEmpty && replayItems.isEmpty && playback.player.currentItem == nil
+        let seededAutoplaysCache = freshItems.isEmpty && replayItems == [201] && playback.player.currentItem != nil
         playback.append(first, number: 200)
         let monitor = Timer.scheduledTimer(withTimeInterval: 0.03, repeats: true) { _ in
             if playback.player.currentItem == nil { missingCurrentSamples += 1 }
@@ -273,7 +369,7 @@ enum DisplayedPlaybackTest {
         pump(1.2)
         monitor.invalidate()
         return ([
-            "seeded_pool_does_not_autoplay_before_first_fresh": seededDoesNotAutoplay,
+            "seeded_pool_starts_cache_before_first_download": seededAutoplaysCache,
             "seeded_pool_plays_unvisited_cached_photos": replaysWhileWaiting.contains(201) && replaysWhileWaiting.contains(202),
             "seeded_pool_keeps_fresh_callback_accurate": freshItems == [200],
             "seeded_pool_fades_across_multiple_frames": opacitySamplesWhileWaiting >= 12,
@@ -286,7 +382,7 @@ enum DisplayedPlaybackTest {
             "freshItems": freshItems,
             "replayItems": replayItems,
             "shown": shown,
-            "seededDoesNotAutoplay": seededDoesNotAutoplay,
+            "seededAutoplaysCache": seededAutoplaysCache,
             "intermediateOpacitySamplesWhileWaiting": opacitySamplesWhileWaiting,
             "missingCurrentSamples": missingCurrentSamples,
             "finishCount": finishes,

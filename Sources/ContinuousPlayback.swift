@@ -18,6 +18,8 @@ final class ContinuousPlayback {
     var moviePhotoStarts: [Double] = [0]
     var onFinished: (() -> Void)?
     var onFailure: ((Error) -> Void)?
+    /// A retained item is taking time to decode/display; nil clears the notice.
+    var onPlaybackWait: ((String?) -> Void)?
     var onPlayingChanged: ((Bool) -> Void)?
     var onPlayerChanged: ((AVQueuePlayer) -> Void)?
     var requiresDisplayReady = false
@@ -26,13 +28,20 @@ final class ContinuousPlayback {
     private var staged: Clip?
     private var stagedIsReplay = false
     private var history: [Clip] = []
-    private var replayBag: [Clip] = []
+    // Availability and viewing are different: a cached photo may be shown
+    // before the producer reaches it. Track identity, not its rendered URL.
+    private var shownNumbers: Set<Int> = []
+    private var roundShownNumbers: Set<Int> = []
     private var visits: [Clip] = []
     private var visitIndex = -1
     private var stagedVisitIndex: Int?
     private var manualAdvance = false
     private var stagedManual = false
     private var stagedPrerollStarted = false
+    private var currentLoadedAt = CACurrentMediaTime()
+    private var stagedLoadedAt = CACurrentMediaTime()
+    private var playbackWaitMessage: String?
+    private var reportedCurrentFailure: ObjectIdentifier?
     private var productionFinished = false
     private var loopingMovie = false
     private var active = false
@@ -66,7 +75,7 @@ final class ContinuousPlayback {
                 let transportGeneration = self.transportEpoch
                 let observedItem = observed.currentItem
                 let rate = change.newValue ?? observed.rate
-                let duration = observed.currentItem?.duration.seconds ?? .nan
+                let duration = observedItem?.status == .readyToPlay ? observedItem!.duration.seconds : .nan
                 let atBoundary = rate == 0 && duration.isFinite && observed.currentTime().seconds >= duration - 0.08
                 let internalChange = !self.active || self.internalTransport || self.repeatSeeking || atBoundary
                 DispatchQueue.main.async { [weak self] in
@@ -96,34 +105,61 @@ final class ContinuousPlayback {
         for (url, number) in clips where !history.contains(where: { $0.number == number }) {
             history.append(Clip(url: url, number: number))
         }
-        replayBag.removeAll()
-        if currentClip != nil { preload() }
+        if currentClip == nil, let first = history.first {
+            // Cached replays are immediately useful at startup, before a slow
+            // first download finishes. They count as viewed when displayed,
+            // so the producer reaching the same photo cannot queue it twice.
+            start(first, replay: true)
+        } else { preload() }
+    }
+    private func start(_ clip: Clip, replay: Bool) {
+        // Replacing an old item can emit a transient rate=0 callback. Capture
+        // it as internal so it cannot be mistaken for the user's Pause action.
+        internalTransport = true
+        defer { internalTransport = false }
+        currentClip = clip
+        reportedCurrentFailure = nil
+        currentLoadedAt = CACurrentMediaTime()
+        visits = [clip]; visitIndex = 0
+        rememberPrepared(clip)
+        rememberShown(clip)
+        player.replaceCurrentItem(with: AVPlayerItem(url: clip.url))
+        wantsPlaying = true; player.play()
+        if replay { onReplay?(clip.number) } else { onItem?(clip.number) }
+        onPlayingChanged?(true)
+        preload()
     }
     func append(_ url: URL, number: Int) {
         guard active else { return }
-        if player.currentItem == nil {
-            let clip = Clip(url: url, number: number)
-            currentClip = clip
-            visits = [clip]; visitIndex = 0
-            rememberPrepared(clip)
-            player.replaceCurrentItem(with: AVPlayerItem(url: url))
-            wantsPlaying = true; player.play(); onItem?(number); onPlayingChanged?(true)
+        let clip = Clip(url: url, number: number)
+        rememberPrepared(clip)
+        if player.currentItem == nil { start(clip, replay: false) }
+        else {
+            // Refresh the variant for future playback without forcing an
+            // already viewed cached photo back into the first-pass queue.
+            pending.removeAll { $0.number == number }
+            if !shownNumbers.contains(number) { pending.append(clip) }
+            if staged?.number == number, staged?.url != url,
+               stagedVisitIndex == nil, !isTransitioning, !manualAdvance { clearStaged() }
             preload()
-        } else { pending.append(Clip(url: url, number: number)); preload() }
+        }
     }
     func finishPreparing() {
         productionFinished = true
-        if stagedIsReplay && !isTransitioning && !manualAdvance { clearStaged(); preload() }
+        if let staged, stagedIsReplay, shownNumbers.contains(staged.number),
+           !isTransitioning && !manualAdvance { clearStaged() }
+        preload()
         if player.currentItem == nil && active { active = false; onFinished?() }
     }
     func stop() {
         epoch += 1; active = false; wantsPlaying = false; repeatSeeking = false
         transitionProgress = nil; pending.removeAll(); staged = nil; stagedIsReplay = false; currentClip = nil
-        history.removeAll(); replayBag.removeAll()
+        history.removeAll(); shownNumbers.removeAll(); roundShownNumbers.removeAll()
         visits.removeAll(); visitIndex = -1; stagedVisitIndex = nil; manualAdvance = false; stagedManual = false
         stagedPrerollStarted = false
         for p in players { p.pause(); p.removeAllItems() }
         setOpacity(current: 1, incoming: 0)
+        updatePlaybackWait(nil); reportedCurrentFailure = nil
         onPlayingChanged?(false)
     }
     func togglePlayback() {
@@ -167,15 +203,30 @@ final class ContinuousPlayback {
     }
     private func stageVisit(at index: Int) {
         staged = visits[index]; stagedVisitIndex = index; stagedIsReplay = false
+        stagedLoadedAt = CACurrentMediaTime()
         incoming.replaceCurrentItem(with: AVPlayerItem(url: visits[index].url))
         stagedPrerollStarted = false
     }
     private var incoming: AVQueuePlayer { players[1 - current] }
     private func rememberPrepared(_ clip: Clip) {
-        // Once today's render plays, future waiting replays should use it in
-        // preference to a variant recovered from an earlier session.
+        // A newly prepared variant replaces an older cached render even when
+        // this photo has already been seen and does not need another turn.
         if let index = history.firstIndex(where: { $0.number == clip.number }) { history[index] = clip }
         else { history.append(clip) }
+        for index in visits.indices where visits[index].number == clip.number { visits[index] = clip }
+    }
+    private func rememberShown(_ clip: Clip) {
+        shownNumbers.insert(clip.number)
+        roundShownNumbers.insert(clip.number)
+        pending.removeAll { $0.number == clip.number }
+    }
+    private var hasUnseenPrepared: Bool {
+        history.contains { !shownNumbers.contains($0.number) }
+    }
+    private func discardFailed(_ clip: Clip) {
+        history.removeAll { $0.number == clip.number && $0.url == clip.url }
+        pending.removeAll { $0.number == clip.number && $0.url == clip.url }
+        shownNumbers.remove(clip.number); roundShownNumbers.remove(clip.number)
     }
     private func setTransport(playing: Bool) {
         internalTransport = true
@@ -185,8 +236,11 @@ final class ContinuousPlayback {
     }
     private func rateChanged(_ observed: AVQueuePlayer, rate: Float) {
         guard active, observed === player, !internalTransport, !repeatSeeking else { return }
+        // A zero rate while AVFoundation is loading is not a user pause.
+        // Avoid asking for duration before its item has finished preparing.
+        guard let item = player.currentItem, item.status == .readyToPlay else { return }
         let time = player.currentTime().seconds
-        let duration = player.currentItem?.duration.seconds ?? .nan
+        let duration = item.duration.seconds
         // AVFoundation pauses itself at the natural boundary. That is not a user pause.
         if rate == 0, duration.isFinite, time >= duration - 0.08 { return }
         let playing = rate != 0
@@ -197,8 +251,11 @@ final class ContinuousPlayback {
     }
     private func preload() {
         guard active, !loopingMovie, !isTransitioning else { return }
-        // New photos take priority over a cached replay that has not started.
-        if stagedIsReplay && !pending.isEmpty && !manualAdvance { clearStaged() }
+        // Unseen photos replace a speculative repeat, but preloading itself
+        // never consumes a turn. New renders do not reset the shuffle cycle.
+        if let staged, stagedVisitIndex == nil, !manualAdvance,
+           (stagedIsReplay && !pending.isEmpty) ||
+           (shownNumbers.contains(staged.number) && hasUnseenPrepared) { clearStaged() }
         guard staged == nil else { return }
         if visitIndex + 1 < visits.count {
             stageVisit(at: visitIndex + 1)
@@ -207,15 +264,22 @@ final class ContinuousPlayback {
         let clip: Clip
         if let next = pending.first {
             clip = next; stagedIsReplay = false
+        } else if let unseen = history.filter({ !shownNumbers.contains($0.number) }).randomElement() {
+            clip = unseen; stagedIsReplay = true
         } else {
             guard !productionFinished else { return }
-            if replayBag.isEmpty {
-                replayBag = history.filter { $0.number != currentClip?.number }.shuffled()
+            let alternatives = history.filter { $0.number != currentClip?.number }
+            guard !alternatives.isEmpty else { return }
+            var remaining = alternatives.filter { !roundShownNumbers.contains($0.number) }
+            if remaining.isEmpty {
+                roundShownNumbers.removeAll()
+                remaining = alternatives
             }
-            guard let replay = replayBag.popLast() else { return }
+            guard let replay = remaining.randomElement() else { return }
             clip = replay; stagedIsReplay = true
         }
         staged = clip
+        stagedLoadedAt = CACurrentMediaTime()
         incoming.replaceCurrentItem(with: AVPlayerItem(url: clip.url))
         stagedPrerollStarted = false
     }
@@ -229,16 +293,46 @@ final class ContinuousPlayback {
         guard staged != nil, incoming.currentItem?.status == .readyToPlay else { return false }
         return !requiresDisplayReady || videoLayers[1 - current].isReadyForDisplay
     }
+    private func updatePlaybackWait(_ message: String?) {
+        guard message != playbackWaitMessage else { return }
+        playbackWaitMessage = message
+        onPlaybackWait?(message)
+    }
+    private func reportReadinessWait(at now: TimeInterval) {
+        let item: AVPlayerItem?, clip: Clip?, since: TimeInterval
+        let currentReady = player.currentItem?.status == .readyToPlay &&
+            (!requiresDisplayReady || videoLayers[current].isReadyForDisplay)
+        if !currentReady, currentClip != nil {
+            item = player.currentItem; clip = currentClip; since = currentLoadedAt
+        } else if staged != nil, !nextReady {
+            item = incoming.currentItem; clip = staged; since = stagedLoadedAt
+        } else { updatePlaybackWait(nil); return }
+        guard let clip, now - since >= 5 else { updatePlaybackWait(nil); return }
+        let seconds = Int((now - since) / 5) * 5
+        let detail = item?.status == .failed
+            ? "Could not play item \(clip.number + 1): \(item?.error?.localizedDescription ?? "The prepared media is unreadable.")"
+            : "Waiting for prepared item \(clip.number + 1) to become ready · \(seconds)s"
+        updatePlaybackWait(detail)
+    }
     private func tick() {
         let now = CACurrentMediaTime(), delta = min(now - lastTick, 0.1)
         lastTick = now
         guard active else { return }
+        reportReadinessWait(at: now)
+        if let item = player.currentItem, item.status == .failed {
+            if reportedCurrentFailure != ObjectIdentifier(item) {
+                reportedCurrentFailure = ObjectIdentifier(item)
+                let failure = item.error ?? NSError(domain: "SpatialSlideshow.Playback", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "The prepared item could not be played. Try preparing the album again."])
+                onFailure?(failure)
+                if let clip = currentClip { discardFailed(clip) }
+            }
+            preload()
+            if nextReady { completeTransition(); return }
+        }
         if let item = incoming.currentItem, item.status == .failed, let failed = staged {
             if let error = item.error { onFailure?(error) }
-            if stagedIsReplay {
-                history.removeAll { $0.number == failed.number }
-                replayBag.removeAll { $0.number == failed.number }
-            } else if stagedVisitIndex == nil && !pending.isEmpty { pending.removeFirst() }
+            discardFailed(failed)
             transitionProgress = nil; setOpacity(current: 1, incoming: 0)
             clearStaged()
             preload()
@@ -266,7 +360,7 @@ final class ContinuousPlayback {
             return
         }
         guard !loopingMovie, !repeatSeeking, nextReady,
-              let item = player.currentItem else { return }
+              let item = player.currentItem, item.status == .readyToPlay else { return }
         let remaining = item.duration.seconds - player.currentTime().seconds
         if remaining.isFinite, remaining > 0, remaining <= max(0.02, transitionDuration), transitionDuration > 0 {
             transitionLength = max(0.05, min(transitionDuration, remaining))
@@ -295,17 +389,14 @@ final class ContinuousPlayback {
         internalTransport = true
         defer { internalTransport = false }
         let old = player, replay = stagedIsReplay, navigation = stagedVisitIndex, manual = stagedManual
-        if !replay && navigation == nil {
-            pending.removeFirst()
-            rememberPrepared(clip)
-            replayBag.removeAll()
-        }
+        rememberShown(clip)
         if let navigation { visitIndex = navigation }
         else {
             if visitIndex + 1 < visits.count { visits.removeSubrange((visitIndex + 1)..<visits.count) }
             visits.append(clip); visitIndex = visits.count - 1
         }
-        current = 1 - current; currentClip = clip
+        current = 1 - current; currentClip = clip; reportedCurrentFailure = nil
+        currentLoadedAt = stagedLoadedAt
         transitionProgress = nil; staged = nil; stagedIsReplay = false; stagedVisitIndex = nil; manualAdvance = false; stagedManual = false
         setOpacity(current: 1, incoming: 0)
         old.pause(); old.replaceCurrentItem(with: nil)
@@ -325,8 +416,8 @@ final class ContinuousPlayback {
             else { completeTransition() }
             return
         }
-        if productionFinished && pending.isEmpty && !loopingMovie {
-            active = false; wantsPlaying = false; player.pause(); onPlayingChanged?(false); onFinished?(); return
+        if productionFinished && pending.isEmpty && staged == nil && !hasUnseenPrepared && !loopingMovie {
+            active = false; wantsPlaying = false; player.pause(); updatePlaybackWait(nil); onPlayingChanged?(false); onFinished?(); return
         }
         guard let number = currentClip?.number else { return }
         onRepeat?(number)

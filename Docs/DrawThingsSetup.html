@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draw Things setup · Spatial Slideshow</title>
+<style>
+:root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:760px;margin:60px auto;padding:0 24px;line-height:1.6}h1{line-height:1.2}pre{padding:18px;border-radius:10px;background:#8882;white-space:pre-wrap;overflow-wrap:anywhere}code{font-size:.88em}a{color:light-dark(#0760bf,#83bbff)}.note{padding:16px 20px;border-left:3px solid #888;background:#8881}
+</style>
+<h1>Outpainting with Draw Things</h1>
+<p>Select <strong>Settings → Photo Edge Expansion → Draw Things · FLUX.2 Klein</strong> to extend photos with the local Draw Things engine. The expanded photo then goes through the actual Apple Photos Reframe model for 3D motion.</p>
+<p>New photos require processing; completed expanded stills are saved for reuse across launches and changes to motion or zoom. Generated borders can contain invented details or visible joins. The original photo’s interior is restored at full resolution.</p>
+<h2>First-time setup</h2>
+<p>You need an Apple Silicon Mac and Python 3.12. The pinned models total <strong>8.63 GB (8.04 GiB)</strong>; the server and model manager add about 0.51 GB. Allow approximately <strong>16 GB of free space</strong> for a fresh installation, including Python packages and the first-run model conversion. Setup reserves 5 GiB for that conversion because Draw Things briefly creates another large tensor file before compacting the original. An already converted installation needs only the normal 2 GiB of working space. The installer checks space before downloading and does not delete existing models or photo caches.</p>
+<p>In Terminal, run the installer bundled with your app, replacing the app path with its actual location:</p>
+<pre><code>python3.12 "/path/to/Spatial Slideshow.app/Contents/Resources/setup_drawthings.py"</code></pre>
+<p>Or run from a source checkout:</p>
+<pre><code>python3.12 Scripts/setup_drawthings.py</code></pre>
+<p>To put the model files on another drive, add:</p>
+<pre><code>--models-directory "/Volumes/Your Drive/Spatial Slideshow Models"</code></pre>
+<p>When setup finishes, reopen Settings, enable edge expansion, and choose the Draw Things option. Setup registers this runtime separately and does not change your selected backend or slideshow preferences.</p>
+<h2>Reuse an existing installation</h2>
+<p>You can reuse a compatible Python 3.12 environment, official downloaded binaries, and a model folder. The two binaries are checksum-verified and copied into the managed runtime. Python and the supplied model folder remain in their existing locations, so keep them available.</p>
+<pre><code>python3 Scripts/setup_drawthings.py \
+  --use-existing "/path/to/environment/bin/python" \
+  --server-binary "/path/to/gRPCServerCLI-macOS" \
+  --cli-binary "/path/to/draw-things-cli" \
+  --models-directory "/path/to/Models" \
+  --no-download</code></pre>
+<p>For an app installation, replace <code>Scripts/setup_drawthings.py</code> with the bundled installer path. <code>--no-download</code> verifies that everything is already present and prevents network downloads. Omit it to fetch missing binaries or models. <code>--use-existing</code> never changes packages in the environment you provide.</p>
+<h2>Local processing</h2>
+<p>The app uses a dedicated local server bound to <code>127.0.0.1:7863</code>, with the server’s default TLS enabled. It is not exposed to your network. Setup does not start the server or install a background login service. Model generation stays on your Mac; photos are not uploaded to a cloud service.</p>
+<p>Runtime registration is stored at <code>~/Library/Application Support/Photos Spatial Slideshow/Draw Things Runtime/runtime.json</code>. Default binaries, Python environment, and models live in the same folder. Existing Apple Fast Clean Up and MLX backends remain available.</p>
+<h2>Pinned components</h2>
+<p>The installer uses the official <a href="https://github.com/drawthingsai/draw-things-community/releases/tag/v26.0910.1">Draw Things v26.0910.1 release</a> and <a href="https://pypi.org/project/drawthings-py/0.4.0/">drawthings-py 0.4.0</a>. Models and runtime software are installed separately; they are not included in Spatial Slideshow’s app download.</p>
+<ul><li><code>flux_2_klein_4b_i8x.ckpt</code></li><li><code>qwen_3_4b_q8p.ckpt</code></li><li><code>flux_2_vae_f16.ckpt</code></li></ul>
+<p>After its first use, Draw Things may split the Qwen file into a small <code>.ckpt</code> and a large <code>.ckpt-tensordata</code> file. Keep both. Setup recognizes and verifies this converted pair, so running setup again does not download another copy.</p>
+<p class="note">If setup reports a checksum mismatch, it leaves the existing file in place. Choose a different model directory or move the named file aside yourself, then retry. If port 7863 is already in use, stop the conflicting local process before starting this backend.</p>
+</html>

@@ -32,6 +32,30 @@ enum PhotoVersion: String, CaseIterable {
     var title: String { self == .current ? "Full Quality · Latest Edits" : "Full Quality · Unedited Original" }
 }
 
+enum ExpansionBackend: String, CaseIterable {
+    case appleCleanup, fluxKlein, drawThingsFlux, applePhotosExtend
+    var title: String {
+        switch self {
+        case .appleCleanup: return "Apple Fast Clean Up"
+        case .fluxKlein: return "FLUX.2 Klein · MLX"
+        case .drawThingsFlux: return "FLUX · Draw Things"
+        case .applePhotosExtend: return "Apple Photos Extend"
+        }
+    }
+    var expansionDescription: String {
+        switch self {
+        case .appleCleanup:
+            return "Experimental · Fast, local edge fill using the installed Photos models."
+        case .fluxKlein:
+            return "Experimental · Local generative outpainting. Allow several minutes per new photo; expanded stills are saved for reuse. Generated scenery may differ from the real scene."
+        case .drawThingsFlux:
+            return "Experimental · FLUX.2 Klein 4B through Draw Things, running locally. Generates a border in four steps and preserves the original photo. Expanded stills are saved for reuse; generated scenery and background focus may differ."
+        case .applePhotosExtend:
+            return "Research preview · Uses Apple’s online Extend service through the open Photos app. Requires the temporary SIP-disabled setup and Xcode tools. Currently enabled for the Trip album only. Expanded images are saved for reuse."
+        }
+    }
+}
+
 struct SlideshowOptions: View {
     @ObservedObject var model: SlideshowModel
 
@@ -101,8 +125,34 @@ struct SlideshowOptions: View {
                     }
                     settingsSection("Photo Edge Expansion", symbol: "arrow.up.left.and.arrow.down.right") {
                         Toggle("Expand photo edges", isOn: $model.expandPhotoEdges)
-                        Text("Experimental · Apple Fast Clean Up")
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                            ForEach(ExpansionBackend.allCases, id: \.self) { backend in
+                                settingChoice(backend.title, selected: model.expansionBackend == backend) {
+                                    model.expansionBackend = backend
+                                }
+                            }
+                        }.disabled(!model.expandPhotoEdges)
+                        Text(model.expansionBackend.expansionDescription)
                             .font(.caption).foregroundStyle(.secondary)
+                        if model.expansionBackend == .fluxKlein {
+                            HStack {
+                                Label(model.kleinRuntimeConfigured ? "Python runtime configured" : "Python runtime needs setup",
+                                      systemImage: model.kleinRuntimeConfigured ? "checkmark.circle" : "info.circle")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Choose Runtime…", action: model.chooseKleinRuntime)
+                                Button("Setup Help", action: model.showKleinSetup)
+                            }
+                        }
+                        if model.expansionBackend == .drawThingsFlux {
+                            HStack {
+                                Label(model.drawThingsRuntimeConfigured ? "Local runtime configured" : "Local runtime needs setup",
+                                      systemImage: model.drawThingsRuntimeConfigured ? "checkmark.circle" : "info.circle")
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Button("Setup Help", action: model.showDrawThingsSetup)
+                            }
+                        }
                         HStack {
                             Text("Extra area per edge")
                             Spacer()

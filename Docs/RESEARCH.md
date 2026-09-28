@@ -30,6 +30,10 @@ The generated result is materialized once, resized to the output canvas, and com
 
 Generation can blur or invent details at the edges, especially at larger amounts. The Photos library is never edited. Generated images, scene buffers, and output clips remain local application data.
 
+## Native Photos Extend
+
+The [native Photos Extend investigation](APPLE_EXTEND.md) now includes successful original-Photos generation through a one-shot debugger expression, with SIP temporarily disabled by the user. The app offers this as an optional Trip-only research backend. Its request uses Apple's online Extend service and real Photos entitlement; standalone helpers remain blocked. Fast Clean Up above remains the local default.
+
 ## Color and caches
 
 Input orientation and embedded color profiles are respected. HDR still images are tone-mapped to SDR, then converted to sRGB before inference. The Gaussian renderer operates in linear color; video output is matched to the Rec.709 metadata written to the MP4. Still-image output is SDR. Album videos use a separate export/cache route that preserves source timing and, when passthrough is supported, resolution, orientation, audio, and color tags.

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLUX.2 Klein setup · Spatial Slideshow</title>
+<style>
+:root{color-scheme:light dark;font-family:system-ui,sans-serif}body{max-width:760px;margin:60px auto;padding:0 24px;line-height:1.6}h1{line-height:1.2}pre{padding:18px;border-radius:10px;background:#8882;white-space:pre-wrap;overflow-wrap:anywhere}code{font-size:.88em}a{color:light-dark(#0760bf,#83bbff)}.note{padding:16px 20px;border-left:3px solid #888;background:#8881}
+</style>
+<h1>Outpainting with FLUX.2 Klein</h1>
+<p>Use <strong>Settings → Photo Edge Expansion → FLUX.2 Klein</strong> to generate extra surroundings before Apple Photos Reframe animates the photo. Both models run on your Mac. Photos are not uploaded to a model service.</p>
+<p>Allow several minutes per new photo. Expanded stills are cached across launches, so changing motion or zoom does not require another outpainting pass. Start with a small amount of extra area. Generated scenery can contain visible seams or invented details.</p>
+<h2>Already installed?</h2>
+<p>If Settings shows <strong>Local runtime configured</strong>, enable edge expansion and select FLUX.2 Klein. The app verifies the required packages and model files when you start playback.</p>
+<p>To use another existing installation, click <strong>Choose Runtime…</strong> and select the Python environment folder containing <code>bin/python</code> and <code>mlx-gen</code>. The required model snapshots below must already be downloaded.</p>
+<h2>First-time setup</h2>
+<p>Setup requires an Apple Silicon Mac, Python 3.12, and approximately 10 GB of model downloads plus room for the Python environment and generated images. Downloads happen only during this explicit setup; playback uses the installed models offline.</p>
+<p>In Terminal, run the installer bundled with the app. Replace the app location with where you saved it:</p>
+<pre><code>python3.12 "/path/to/Spatial Slideshow.app/Contents/Resources/setup_klein.py"</code></pre>
+<p>Or from a source checkout:</p>
+<pre><code>python3.12 Scripts/setup_klein.py</code></pre>
+<p>To register a compatible existing environment without downloading a second copy:</p>
+<pre><code>python3 Scripts/setup_klein.py --use-existing "/path/to/environment/bin/python"</code></pre>
+<p>The installer registers the runtime in <code>~/Library/Application Support/Photos Spatial Slideshow/Klein Runtime/</code>. If you installed it while the app was open, reopen Settings. Playback always checks the current registration.</p>
+<h2>Models and runtime</h2>
+<p>This option uses <a href="https://huggingface.co/AbstractFramework/flux.2-klein-base-4b-8bit">FLUX.2 Klein Base 4B, 8-bit</a>, <a href="https://huggingface.co/fal/flux-2-klein-4B-outpaint-lora">fal’s outpainting adapter</a>, and <code>mlx-gen 0.38.0</code>. The installer pins the model revisions used by the app. Weights and Python packages are installed separately and are not bundled with Spatial Slideshow.</p>
+<p class="note">Apple Fast Clean Up remains the default expansion option. Expansion itself is off for new users. Choosing FLUX changes only the edge generation step; 3D animation still uses the actual Apple Photos Reframe model.</p>
+</html>

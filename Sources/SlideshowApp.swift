@@ -11,6 +11,10 @@ final class SlideshowModel: ObservableObject {
     @Published var motionStyle = MotionStyle(rawValue: UserDefaults.standard.object(forKey: "motionStyle") as? Int ?? -1) ?? .varied { didSet { UserDefaults.standard.set(motionStyle.rawValue, forKey: "motionStyle") } }
     @Published var photoVersion = PhotoVersion(rawValue: UserDefaults.standard.string(forKey: "photoVersion") ?? "original") ?? .original { didSet { UserDefaults.standard.set(photoVersion.rawValue, forKey: "photoVersion") } }
     @Published var expandPhotoEdges = UserDefaults.standard.bool(forKey: "expandPhotoEdges") { didSet { UserDefaults.standard.set(expandPhotoEdges, forKey: "expandPhotoEdges") } }
+    @Published var expansionBackend = ExpansionBackend(rawValue: UserDefaults.standard.string(forKey: "expansionBackend") ?? "appleCleanup") ?? .appleCleanup { didSet { UserDefaults.standard.set(expansionBackend.rawValue, forKey: "expansionBackend") } }
+    @Published var kleinPythonPath = UserDefaults.standard.string(forKey: "kleinPythonPath") ?? "" { didSet { UserDefaults.standard.set(kleinPythonPath, forKey: "kleinPythonPath") } }
+    var kleinRuntimeConfigured: Bool { KleinRuntime.pythonURL(override: kleinPythonPath) != nil }
+    var drawThingsRuntimeConfigured: Bool { DrawThingsRuntime.pythonURL() != nil }
     @Published var expansionPercent = min(20, max(1, UserDefaults.standard.object(forKey: "expansionPercent") as? Int ?? 5)) { didSet { UserDefaults.standard.set(expansionPercent, forKey: "expansionPercent") } }
     @Published var expansionZoomOutPercent = min(40, max(0, UserDefaults.standard.object(forKey: "expansionZoomOutPercent") as? Int ?? 0)) { didSet { UserDefaults.standard.set(expansionZoomOutPercent, forKey: "expansionZoomOutPercent") } }
     var effectiveExpansionZoomOutPercent: Int { min(expansionPercent * 2, expansionZoomOutPercent) }
@@ -25,6 +29,10 @@ final class SlideshowModel: ObservableObject {
     @Published var status = "Choose photos or browse an album"
     @Published var preparationStatus: String?
     @Published var preparationIssue: String?
+    @Published var playbackIssue: String?
+    @Published var latestFailure: String?
+    @Published var failureCount = 0
+    var activeIssue: String? { preparationIssue ?? playbackIssue }
     @Published var error: String?
     @Published var movie: URL?
     @Published var albumTitle: String?
@@ -49,6 +57,8 @@ final class SlideshowModel: ObservableObject {
         let style: MotionStyle
         let photoVersion: PhotoVersion
         let expansion: Int
+        let expansionBackend: ExpansionBackend?
+        let kleinPythonPath: String?
         let zoomOut: Int
         let outputLongEdge: Int
         let shuffleAlbum: Bool
@@ -61,6 +71,8 @@ final class SlideshowModel: ObservableObject {
         let isAlbum = albumTitle != nil
         return RenderSettings(seconds: seconds, motion: motion, style: motionStyle,
                               photoVersion: photoVersion, expansion: expandPhotoEdges ? expansionPercent : 0,
+                              expansionBackend: expandPhotoEdges ? expansionBackend : nil,
+                              kleinPythonPath: expandPhotoEdges && expansionBackend == .fluxKlein ? kleinPythonPath : nil,
                               zoomOut: expandPhotoEdges ? effectiveExpansionZoomOutPercent : 0,
                               outputLongEdge: outputLongEdge, shuffleAlbum: isAlbum && shuffleAlbum,
                               includeVideos: isAlbum && includeVideos,
@@ -74,10 +86,36 @@ final class SlideshowModel: ObservableObject {
         if albumTitle != nil { replayAlbum() }
         else if !photos.isEmpty { stop(); build() }
     }
+    func chooseKleinRuntime() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose the FLUX.2 Klein Python environment"
+        panel.message = "Select the environment folder containing bin/python and mlx-gen, or its Python executable. Models must be installed before playing."
+        panel.canChooseDirectories = true; panel.canChooseFiles = true
+        panel.allowsMultipleSelection = false; panel.showsHiddenFiles = true
+        guard panel.runModal() == .OK, let selected = panel.url else { return }
+        let isDirectory = (try? selected.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+        let python = isDirectory ? selected.appendingPathComponent("bin/python") : selected
+        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+            error = "This folder does not contain an executable bin/python. Open Setup Help for FLUX installation instructions."
+            return
+        }
+        kleinPythonPath = python.path
+    }
+    func showKleinSetup() {
+        if let url = Bundle.main.url(forResource: "KleinSetup", withExtension: "html") { NSWorkspace.shared.open(url) }
+    }
+    func showDrawThingsSetup() {
+        if let url = Bundle.main.url(forResource: "DrawThingsSetup", withExtension: "html") { NSWorkspace.shared.open(url) }
+    }
+    func shutdown() {
+        stop()
+        DrawThingsRuntime.stopServer()
+    }
     private var albumVideoIndexes: Set<Int> = []
     private var skipped = 0
     private var pendingFullscreen = false
     private var playbackLog: URL?
+    private let logQueue = DispatchQueue(label: "SpatialSlideshow.Diagnostics", qos: .utility)
     private var preparingPhoto: Int?
     private var renderingPhase: String?
     private var loadingPhases: [Int: String] = [:]
@@ -110,11 +148,11 @@ final class SlideshowModel: ObservableObject {
         }
         playback.onReplay = { [weak self] number in
             guard let self, self.albumPlaying else { return }
-            self.status = "Waiting for the next item · Shuffling prepared items"
-            self.logPlayback("Replaying prepared photo \(number + 1)")
+            self.status = "\(self.albumTitle ?? "Album") · \(self.itemLabel(number)) \(number + 1) of \(self.albumCount) · From cache"
+            self.logPlayback("Playing prepared \(self.itemLabel(number).lowercased()) \(number + 1)")
         }
         playback.onTransition = { [weak self] from, to, replay in
-            self?.logPlayback("Fade \(from + 1) → \(to + 1) · \(replay ? "cached replay" : "new photo")")
+            self?.logPlayback("Fade \(from + 1) → \(to + 1) · \(replay ? "prepared photo" : "new photo")")
         }
         playback.onFinished = { [weak self] in
             guard let self, self.albumPlaying else { return }
@@ -124,7 +162,16 @@ final class SlideshowModel: ObservableObject {
             self.logPlayback("Album finished")
             self.status = "Finished \(self.albumTitle ?? "album") · \(self.albumCount - self.skipped) items" + (self.skipped > 0 ? " · \(self.skipped) unavailable" : "")
         }
-        playback.onFailure = { [weak self] _ in self?.skipped += 1 }
+        playback.onFailure = { [weak self] failure in
+            guard let self else { return }
+            self.failureCount += 1
+            self.latestFailure = "Playback: " + StorageRecovery.userMessage(failure)
+            self.logPlayback("Playback failure: \(failure as NSError)")
+        }
+        playback.onPlaybackWait = { [weak self] message in
+            self?.playbackIssue = message
+            self?.logPlayback(message ?? "Playback ready")
+        }
         if let demo = Bundle.main.url(forResource: "Demo", withExtension: "mp4") {
             let demoStarts: [Double] = [0, 6, 11.2, 16.4, 21.6, 26.8]
             playMovie(demo, photoStarts: demoStarts)
@@ -150,9 +197,23 @@ final class SlideshowModel: ObservableObject {
     private func logPlayback(_ message: String) {
         guard let playbackLog else { return }
         let data = Data("\(Date()) \(message)\n".utf8)
-        if let handle = try? FileHandle(forWritingTo: playbackLog) {
-            _ = try? handle.seekToEnd(); try? handle.write(contentsOf: data); try? handle.close()
+        logQueue.async {
+            if let handle = try? FileHandle(forWritingTo: playbackLog) {
+                _ = try? handle.seekToEnd(); try? handle.write(contentsOf: data); try? handle.close()
+            } else { try? data.write(to: playbackLog) }
         }
+    }
+    private func beginPlaybackLog() {
+        playbackLog = try? Self.support().appendingPathComponent("Playback.log")
+        guard let playbackLog else { return }
+        logQueue.async {
+            let previous = playbackLog.deletingLastPathComponent().appendingPathComponent("Previous Playback.log")
+            if let data = try? Data(contentsOf: playbackLog), !data.isEmpty { try? data.write(to: previous, options: .atomic) }
+            try? Data().write(to: playbackLog)
+        }
+    }
+    func showDiagnostics() {
+        if let root = try? Self.support() { NSWorkspace.shared.open(root) }
     }
     static func support() throws -> URL {
         let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -179,7 +240,7 @@ final class SlideshowModel: ObservableObject {
         busy = false; albumPlaying = false; pendingFullscreen = false
         preparationStatus = nil; preparingPhoto = nil
         renderingPhase = nil; loadingPhases.removeAll()
-        storageBlockages.removeAll(); preparationIssue = nil
+        storageBlockages.removeAll(); preparationIssue = nil; playbackIssue = nil
         playback.stop()
         music.stop()
         status = "Stopped"
@@ -207,22 +268,24 @@ final class SlideshowModel: ObservableObject {
         albumVideoCount = assets.filter { $0.mediaType == .video }.count
         if let selected = library.selected, selected.title == title { lastAlbumDefinition = selected }
         busy = true; albumPlaying = true; skipped = 0; pendingFullscreen = true; cachedPhotoCount = 0; preparedPhotoCount = 0
-        playbackLog = try? Self.support().appendingPathComponent("Playback.log")
-        if let playbackLog { try? Data().write(to: playbackLog) }
+        latestFailure = nil; failureCount = 0
+        beginPlaybackLog()
         logPlayback("Starting \(title) · \(albumCountDescription) · fades \(crossfade ? "on" : "off")")
         playback.begin()
         let task = RenderSession(); session = task
         let duration = seconds, strength = motion, style = motionStyle, version = photoVersion, edge = outputLongEdge
         let expandEdges = expandPhotoEdges, extraPercent = expansionPercent, zoomOut = effectiveExpansionZoomOutPercent
-        // Shuffle a playback copy once per run. Keep the original album order
-        // for replay, and visit each photo exactly once before finishing.
+        let backend = expansionBackend, pythonPath = kleinPythonPath
+        // Shuffle a playback copy once per run. Cached photos may play early;
+        // ContinuousPlayback tracks actual visits so they are not queued twice.
         let orderedAssets = shuffleAlbum ? assets.shuffled() : assets
         albumVideoIndexes = Set(orderedAssets.indices.filter { orderedAssets[$0].mediaType == .video })
         status = "Preparing the first item of \(assets.count)…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
                 let root = try Self.support()
-                let expansion = try PhotoExpansionConfiguration.resolve(enabled: expandEdges, percent: extraPercent, zoomOutPercent: zoomOut, tools: tools)
+                task.diagnosticsDirectory = root.appendingPathComponent("Diagnostics")
+                let expansion = try PhotoExpansionConfiguration.resolve(enabled: expandEdges, percent: extraPercent, zoomOutPercent: zoomOut, backend: backend, kleinPythonPath: pythonPath, tools: tools, albumTitle: title, cancelled: { task.isCancelled })
                 // Previously rendered photos from this album can fill a wait,
                 // even before their turn in this run. No new model work here.
                 let cacheLookupStarted = Date()
@@ -239,6 +302,10 @@ final class SlideshowModel: ObservableObject {
                     guard let self, self.session === task, !task.isCancelled else { return }
                     self.cachedPhotoCount = prepared.count
                     self.playback.addPreparedReplays(prepared)
+                    if !prepared.isEmpty {
+                        self.busy = false
+                        if self.pendingFullscreen && self.activeIssue == nil { self.pendingFullscreen = false; self.enterFullscreen() }
+                    }
                     self.logPlayback("Found \(prepared.count) previously prepared photos for waiting playback, including earlier render settings · lookup \(String(format: "%.2f", cacheLookupSeconds)) seconds")
                 }
                 // Keep full-quality PhotoKit requests independent of the serial
@@ -333,7 +400,7 @@ final class SlideshowModel: ObservableObject {
                             if self.preparingPhoto == index { self.preparingPhoto = nil; self.renderingPhase = nil }
                             self.refreshPreparationStatus()
                             self.busy = false
-                            if self.pendingFullscreen && self.preparationIssue == nil { self.pendingFullscreen = false; self.enterFullscreen() }
+                            if self.pendingFullscreen && self.activeIssue == nil { self.pendingFullscreen = false; self.enterFullscreen() }
                         }
                     } catch is CancellationError { throw CancellationError() }
                     catch {
@@ -345,7 +412,8 @@ final class SlideshowModel: ObservableObject {
                         else { try? Data(line.utf8).write(to: log) }
                         DispatchQueue.main.async { [weak self] in
                             guard let self, self.session === task else { return }
-                            self.skipped += 1
+                            self.skipped += 1; self.failureCount += 1
+                            self.latestFailure = "\(self.itemLabel(index)) \(index + 1): " + StorageRecovery.userMessage(error)
                             if self.preparingPhoto == index { self.preparingPhoto = nil; self.renderingPhase = nil }
                             self.refreshPreparationStatus()
                             self.logPlayback("\(self.itemLabel(index)) \(index + 1) unavailable: \(error.localizedDescription)")
@@ -359,13 +427,13 @@ final class SlideshowModel: ObservableObject {
                     self.preparingPhoto = nil
                     self.renderingPhase = nil; self.loadingPhases.removeAll()
                     self.logPlayback("Preparation complete · \(self.preparedPhotoCount) of \(assets.count) photos ready")
-                    if self.skipped == assets.count { self.error = "None of these items could be prepared. Details are in Photos Spatial Slideshow/Album Errors.log in Application Support." }
+                    if self.skipped == assets.count { self.error = "None of these items could be prepared. " + (self.latestFailure ?? "Open Diagnostics for details.") }
                 }
             } catch is CancellationError { }
             catch {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.session === task else { return }
-                    self.stop(); self.error = error.localizedDescription
+                    self.stop(); self.error = StorageRecovery.userMessage(error)
                 }
             }
         }
@@ -380,18 +448,28 @@ final class SlideshowModel: ObservableObject {
     }
     func build() {
         guard !photos.isEmpty, !busy, let tools = Bundle.main.resourceURL else { return }
-        stop(); busy = true
+        stop(); busy = true; latestFailure = nil; failureCount = 0
+        beginPlaybackLog()
         renderedSettings = currentRenderSettings
         let task = RenderSession(); session = task
         let selected = photos, duration = seconds, strength = motion, size = dimensions
         let style = motionStyle, framingMode = framing, fades = crossfade
         let expandEdges = expandPhotoEdges, extraPercent = expansionPercent, zoomOut = effectiveExpansionZoomOutPercent
+        let backend = expansionBackend, pythonPath = kleinPythonPath
         status = "Preparing Photos models…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let expansion = try PhotoExpansionConfiguration.resolve(enabled: expandEdges, percent: extraPercent, zoomOutPercent: zoomOut, tools: tools)
+                let expansion = try PhotoExpansionConfiguration.resolve(enabled: expandEdges, percent: extraPercent, zoomOutPercent: zoomOut, backend: backend, kleinPythonPath: pythonPath, tools: tools, cancelled: { task.isCancelled })
+                task.diagnosticsDirectory = try Self.support().appendingPathComponent("Diagnostics")
                 let job = try Self.support().appendingPathComponent("Renders/\(UUID().uuidString)", isDirectory: true)
                 try FileManager.default.createDirectory(at: job, withIntermediateDirectories: true)
+                var completed = false
+                defer {
+                    // A cancelled outpainting process can leave decoded images
+                    // behind. Only completed file slideshows belong in Renders;
+                    // helper failures already retain their logs in Diagnostics.
+                    if !completed { try? FileManager.default.removeItem(at: job) }
+                }
                 var scenes: [String] = []
                 for (index, photo) in selected.enumerated() {
                     try task.check()
@@ -400,14 +478,20 @@ final class SlideshowModel: ObservableObject {
                     let input = try task.expandedInput(photo, configuration: expansion, directory: job.appendingPathComponent("expansion-\(index)"), tools: tools) { phase in
                         DispatchQueue.main.async { [weak self] in if self?.session === task { self?.status = "Photo \(index + 1) · \(phase)" } }
                     }
-                    try task.run(tools.appendingPathComponent("GenerateScene"), [input.path, scene.path], log: job.appendingPathComponent("inference-\(index).log"))
+                    try task.run(tools.appendingPathComponent("GenerateScene"), [input.path, scene.path], log: job.appendingPathComponent("inference-\(index).log"), stage: "Creating the Photos 3D scene", progress: { phase in
+                        DispatchQueue.main.async { [weak self] in if self?.session === task { self?.status = "Photo \(index + 1) · \(phase)"; self?.logPlayback(phase) } }
+                    })
                     try task.attachExpansionMetadata(input: input, configuration: expansion, scene: scene)
                     if expansion.enabled { try? FileManager.default.removeItem(at: input.deletingLastPathComponent()) }
                     scenes.append(scene.path)
                 }
                 DispatchQueue.main.async { [weak self] in if self?.session === task { self?.status = "Rendering camera motion and crossfades…" } }
                 let output = job.appendingPathComponent("Spatial Slideshow.mp4")
-                try task.run(tools.appendingPathComponent("RenderSlideshow"), [output.path, String(duration), String(strength), size] + scenes, log: job.appendingPathComponent("render.log"), environment: ["SPATIAL_MOTION_PATTERN": String(max(0, style.rawValue)), "SPATIAL_MOTION_VARIETY": style == .varied ? "1" : "0", "SPATIAL_FRAMING": framingMode.rawValue, "SPATIAL_TRANSITION": fades ? "0.8" : "0"])
+                try task.run(tools.appendingPathComponent("RenderSlideshow"), [output.path, String(duration), String(strength), size] + scenes, log: job.appendingPathComponent("render.log"), environment: ["SPATIAL_MOTION_PATTERN": String(max(0, style.rawValue)), "SPATIAL_MOTION_VARIETY": style == .varied ? "1" : "0", "SPATIAL_FRAMING": framingMode.rawValue, "SPATIAL_TRANSITION": fades ? "0.8" : "0"], stage: "Rendering camera motion and fades", timeout: max(180, Double(selected.count) * duration * 2), progress: { phase in
+                    DispatchQueue.main.async { [weak self] in if self?.session === task { self?.status = phase; self?.logPlayback(phase) } }
+                })
+                try task.check()
+                completed = true
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.session === task else { return }
                     self.busy = false; self.session = nil
@@ -425,7 +509,7 @@ final class SlideshowModel: ObservableObject {
             catch {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.session === task else { return }
-                    self.busy = false; self.session = nil; self.status = "Could not create slideshow"; self.error = error.localizedDescription
+                    self.busy = false; self.session = nil; self.status = "Could not create slideshow"; self.error = StorageRecovery.userMessage(error)
                 }
             }
         }
@@ -526,9 +610,16 @@ struct SlideshowView: View {
                     if let preparation = model.preparationStatus {
                         Text(preparation).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     }
-                    if let issue = model.preparationIssue {
-                        Label(issue, systemImage: "externaldrive.badge.exclamationmark")
+                    if let issue = model.activeIssue {
+                        Label(issue, systemImage: "exclamationmark.triangle")
                             .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let failure = model.latestFailure {
+                        Text("\(model.failureCount) issue\(model.failureCount == 1 ? "" : "s") · Latest: \(failure)")
+                            .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
+                    }
+                    if model.latestFailure != nil || model.activeIssue != nil {
+                        Button("Show Diagnostics…", action: model.showDiagnostics)
                     }
                     HStack {
                         Button { model.playback.previousPhoto() } label: { Label("Previous", systemImage: "backward.end.fill") }
@@ -547,8 +638,8 @@ struct SlideshowView: View {
             }
             MoviePreview(playback: model.playback, fullscreen: model.fullScreen, fillScreen: model.framing == .fill, attachWindow: model.attachWindow).frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
                 .overlay(alignment: .top) {
-                    if model.fullScreen, let issue = model.preparationIssue {
-                        Label(issue, systemImage: "externaldrive.badge.exclamationmark")
+                    if model.fullScreen, let issue = model.activeIssue {
+                        Label(issue, systemImage: "exclamationmark.triangle")
                             .font(.callout).padding().background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                             .padding(24).allowsHitTesting(false)
                     }
@@ -563,9 +654,10 @@ struct SlideshowView: View {
             if note.object as? NSWindow === model.window { model.fullScreen = false }
         }
         .onExitCommand { model.exitFullscreen() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.stop() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.shutdown() }
         .sheet(isPresented: $browser) { AlbumBrowser(library: model.library, shuffle: $model.shuffleAlbum, includeVideos: $model.includeVideos, play: model.playAlbum) }
         .alert("Slideshow error", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+            Button("Show Diagnostics…", action: model.showDiagnostics)
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }
     }

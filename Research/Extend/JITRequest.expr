@@ -1,0 +1,96 @@
+// One LLDB Objective-C++ expression. No external development library is loaded.
+// The harness substitutes only the validated job path and control Boolean.
+// Persistent target allocations also support the queue-and-detach harness.
+({
+    typedef struct { double x,y; } SSPoint;
+    typedef struct { double width,height; } SSSize;
+    typedef struct { SSPoint origin; SSSize size; } SSRect;
+    id ssDirectory = (id)[NSURL fileURLWithPath:@__JOB_JSON__ isDirectory:YES];
+    bool ssControl = __CONTROL__;
+    id ssResult = (id)[NSMutableDictionary dictionaryWithDictionary:@{
+        @"schema":@1, @"album":@"Trip", @"control":@(ssControl),
+        @"originalPhotos":@(!ssControl), @"transport":@"LLDB JIT expression",
+        @"pid":@((int)[(id)[NSProcessInfo processInfo] processIdentifier]),
+        @"status":@"queued"
+    }];
+    void (^ssWrite)(id,id) = ^(id status,id message) {
+        (void)[ssResult setObject:status forKey:@"status"];
+        (void)[ssResult setObject:message forKey:@"message"];
+        id data = (id)[NSJSONSerialization dataWithJSONObject:ssResult options:1 error:0];
+        (BOOL)[data writeToURL:(id)[ssDirectory URLByAppendingPathComponent:@"result.json"] atomically:YES];
+    };
+    ssWrite(@"queued", @"Waiting for the host to resume.");
+    void *ssQueue = ((void *(*)(long,unsigned long))dlsym((void *)-2,"dispatch_get_global_queue"))(0x11,0);
+    ((void (*)(void *,void (^)(void)))dlsym((void *)-2,"dispatch_async"))(ssQueue, ^{
+      @autoreleasepool {
+        {
+          void *send = (void *)dlsym((void *)-2,"objc_msgSend");
+          void *task = ((void *(*)(void *))dlsym((void *)-2,"SecTaskCreateFromSelf"))(0);
+          void *value = ((void *(*)(void *,void *,void **))dlsym((void *)-2,"SecTaskCopyValueForEntitlement"))(task,(void *)@"com.apple.modelmanager.inference",0);
+          bool entitled = value && ((unsigned long(*)(void *))dlsym((void *)-2,"CFGetTypeID"))(value) == ((unsigned long(*)(void))dlsym((void *)-2,"CFBooleanGetTypeID"))() && ((bool(*)(void *))dlsym((void *)-2,"CFBooleanGetValue"))(value);
+          if (value) ((void(*)(void *))dlsym((void *)-2,"CFRelease"))(value);
+          if (task) ((void(*)(void *))dlsym((void *)-2,"CFRelease"))(task);
+          (void)[ssResult setObject:@(entitled) forKey:@"inferenceEntitlement"];
+          if (!entitled && !ssControl) { ssWrite(@"failed",@"Original Photos did not expose its inference entitlement."); return; }
+          void *framework = (void *)dlopen("/System/Library/PrivateFrameworks/PhotoImaging.framework/Versions/A/PhotoImaging",1);
+          id pipelineClass = (id)NSClassFromString(@"PIOutfillPipeline");
+          if (!framework || !pipelineClass) { ssWrite(@"failed",@"Native Extend pipeline is unavailable."); return; }
+          id input = (id)[ssDirectory URLByAppendingPathComponent:@"input.heic"];
+          id output = (id)[ssDirectory URLByAppendingPathComponent:@"expanded.png"];
+          if ((bool)[(id)[NSFileManager defaultManager] fileExistsAtPath:(id)[output path]]) { ssWrite(@"failed",@"Output already exists."); return; }
+          id source = (id)[(id)NSClassFromString(@"CIImage") imageWithContentsOfURL:input options:@{
+            (id)*(void **)dlsym((void *)-2,"kCIImageApplyOrientationProperty"):@YES,
+            (id)*(void **)dlsym((void *)-2,"kCIImageExpandToHDR"):@NO,
+            (id)*(void **)dlsym((void *)-2,"kCIImageToneMapHDRtoSDR"):@YES
+          }];
+          if (!source) { ssWrite(@"failed",@"Cannot decode prepared Trip image."); return; }
+          SSRect extent = ((SSRect(*)(id,SEL))send)(source,@selector(extent));
+          id requestData = (id)[NSData dataWithContentsOfURL:(id)[ssDirectory URLByAppendingPathComponent:@"request.json"]];
+          id request = (id)[NSJSONSerialization JSONObjectWithData:requestData options:0 error:0];
+          id percentValue = (id)[request objectForKey:@"percentPerEdge"];
+          double percent = percentValue ? (double)[percentValue doubleValue] : 0;
+          if (percentValue && (percent < 1 || percent > 20)) { ssWrite(@"failed",@"Invalid expansion percentage."); return; }
+          double border = percentValue ? (double)((long)(extent.size.width*percent/100.0+0.999999)) : (double)((long)((extent.size.width+5)/6));
+          double verticalBorder = percentValue ? (double)((long)(extent.size.height*percent/100.0+0.999999)) : 0;
+          (void)[ssResult setObject:@(extent.size.width) forKey:@"originalWidth"];
+          (void)[ssResult setObject:@(extent.size.height) forKey:@"originalHeight"];
+          (void)[ssResult setObject:@(border) forKey:@"left"];
+          (void)[ssResult setObject:@(border) forKey:@"right"];
+          (void)[ssResult setObject:@(verticalBorder) forKey:@"top"];
+          (void)[ssResult setObject:@(verticalBorder) forKey:@"bottom"];
+          void *working = ((void *(*)(void *))dlsym((void *)-2,"CGColorSpaceCreateWithName"))(*(void **)dlsym((void *)-2,"kCGColorSpaceExtendedLinearSRGB"));
+          id ssCIContext = (id)[(id)NSClassFromString(@"CIContext") contextWithOptions:@{
+            (id)*(void **)dlsym((void *)-2,"kCIContextWorkingColorSpace"):(id)working,
+            (id)*(void **)dlsym((void *)-2,"kCIContextWorkingFormat"):@(*(int *)dlsym((void *)-2,"kCIFormatRGBAh"))
+          }];
+          ((void(*)(void *))dlsym((void *)-2,"CGColorSpaceRelease"))(working);
+          id start = (id)[NSDate date];
+          id cancel = (id)[ssDirectory URLByAppendingPathComponent:@"cancel"];
+          id error = nil;
+          id pipeline = (id)[pipelineClass new];
+          ssWrite(@"generating",@"Calling native Photos Extend from the host process.");
+          id expanded = ((id(*)(id,SEL,id,id,long,double,double,double,double,id,BOOL(^)(void),id *))send)(pipeline,
+            @selector(applyOutfill:context:orientation:expandLeft:expandRight:expandTop:expandBottom:useCaseIdentifier:cancellationCheck:error:),
+            source,ssCIContext,1,border,border,verticalBorder,verticalBorder,nil,^BOOL {
+              return -(double)[start timeIntervalSinceNow] > 300 || (BOOL)[(id)[NSFileManager defaultManager] fileExistsAtPath:(id)[cancel path]];
+            },&error);
+          (void)[ssResult setObject:@(-(double)[start timeIntervalSinceNow]) forKey:@"elapsedSeconds"];
+          if (!expanded) {
+            if (error) { (void)[ssResult setObject:(id)[error domain] forKey:@"errorDomain"]; (void)[ssResult setObject:@((long)[error code]) forKey:@"errorCode"]; }
+            ssWrite(@"failed", error ? (id)[error description] : @"Native Extend returned no image.");
+          } else {
+            SSRect outExtent = ((SSRect(*)(id,SEL))send)(expanded,@selector(extent));
+            void *srgb = ((void *(*)(void *))dlsym((void *)-2,"CGColorSpaceCreateWithName"))(*(void **)dlsym((void *)-2,"kCGColorSpaceSRGB"));
+            BOOL saved = ((BOOL(*)(id,SEL,id,id,int,void *,id,id *))send)(ssCIContext,@selector(writePNGRepresentationOfImage:toURL:format:colorSpace:options:error:),expanded,output,*(int *)dlsym((void *)-2,"kCIFormatRGBA8"),srgb,@{},&error);
+            ((void(*)(void *))dlsym((void *)-2,"CGColorSpaceRelease"))(srgb);
+            (void)[ssResult setObject:@(outExtent.size.width) forKey:@"outputWidth"];
+            (void)[ssResult setObject:@(outExtent.size.height) forKey:@"outputHeight"];
+            if (saved) (void)[ssResult setObject:@"expanded.png" forKey:@"output"];
+            ssWrite(saved ? @"complete":@"failed",saved ? @"Saved native Extend output.":(error ? (id)[error description]:@"PNG export failed."));
+          }
+          (void)[pipeline release];
+        }
+      }
+    });
+    0;
+})

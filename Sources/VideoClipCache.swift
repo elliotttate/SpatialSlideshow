@@ -83,7 +83,7 @@ extension RenderSession {
                 state.finish(.failure(error ?? self.videoError("This video could not be loaded from Photos.")))
             }
         }
-        do { return try waitForVideoResult(state, timeout: 1800) }
+        do { return try waitForVideoResult(state, timeout: 300, stage: "Waiting for Photos / iCloud to deliver the video", progress: progress) }
         catch { manager.cancelImageRequest(request); throw error }
     }
 
@@ -104,7 +104,9 @@ extension RenderSession {
                 guard exporter.supportedFileTypes.contains(.mov) else { continue }
                 let temporary = scratch.appendingPathComponent("video-\(index).mov")
                 progress(preset == AVAssetExportPresetPassthrough ? "Caching full-quality video…" : "Preparing edited video…")
-                try waitForVideoOperation(timeout: 7200) { try await exporter.export(to: temporary, as: .mov) }
+                try waitForVideoOperation(timeout: 7200, stage: "Preparing full-quality video", progress: { phase in
+                    progress("\(phase) · \(Int(exporter.progress * 100))%")
+                }) { try await exporter.export(to: temporary, as: .mov) }
                 try check()
                 let movie = AVURLAsset(url: temporary)
                 let valid = try waitForVideoOperation {
@@ -121,7 +123,10 @@ extension RenderSession {
                 return output
             } catch {
                 try check()
-                if error is CancellationError || StorageRecovery.isOutOfSpace(error) { throw error }
+                let value = error as NSError
+                if error is CancellationError || StorageRecovery.isOutOfSpace(error) || StorageRecovery.isOffline(error)
+                    || (value.domain == "SpatialSlideshow.Video" && value.code == 2)
+                    || (value.domain == NSURLErrorDomain && value.code == NSURLErrorTimedOut) { throw error }
                 var detail: [String] = []
                 var current: NSError? = error as NSError
                 for _ in 0..<4 {
@@ -164,7 +169,7 @@ extension RenderSession {
             let temporary = scratch.appendingPathComponent("video-\(index).mov")
             progress(preset == AVAssetExportPresetPassthrough ? "Caching full-quality video…" : "Preparing edited video…")
             do {
-                try waitForVideoOperation(timeout: 7200) {
+                try waitForVideoOperation(timeout: 7200, stage: "Preparing full-quality video", progress: progress) {
                     try await exporter.export(to: temporary, as: .mov)
                 }
                 try check()
@@ -192,13 +197,13 @@ extension RenderSession {
         throw lastError ?? videoError("This video could not be exported for playback.")
     }
 
-    private func waitForVideoOperation<Value>(timeout: TimeInterval = 300, _ operation: @escaping () async throws -> Value) throws -> Value {
+    private func waitForVideoOperation<Value>(timeout: TimeInterval = 300, stage: String = "Preparing video", progress: (String) -> Void = { _ in }, _ operation: @escaping () async throws -> Value) throws -> Value {
         let state = VideoOperationResult<Value>()
         let task = Task.detached {
             do { state.finish(.success(try await operation())) }
             catch { state.finish(.failure(error)) }
         }
-        do { return try waitForVideoResult(state, timeout: timeout) }
+        do { return try waitForVideoResult(state, timeout: timeout, stage: stage, progress: progress) }
         catch {
             // The async export API cancels when its Task is cancelled. Give it
             // a short bounded opportunity to close its output before cleanup.
@@ -211,20 +216,29 @@ extension RenderSession {
         }
     }
 
-    private func waitForVideoResult<Value>(_ state: VideoOperationResult<Value>, timeout: TimeInterval) throws -> Value {
-        let deadline = Date().addingTimeInterval(timeout)
+    private func waitForVideoResult<Value>(_ state: VideoOperationResult<Value>, timeout: TimeInterval, stage: String, progress: (String) -> Void) throws -> Value {
+        let started = Date()
+        let deadline = started.addingTimeInterval(timeout)
+        var lastUpdate = started
         state.condition.lock()
         while state.result == nil && !isCancelled && Date() < deadline {
             _ = state.condition.wait(until: Date().addingTimeInterval(0.1))
+            if state.result == nil && Date().timeIntervalSince(lastUpdate) >= 5 {
+                lastUpdate = Date()
+                let elapsed = Int(lastUpdate.timeIntervalSince(started))
+                state.condition.unlock()
+                progress("\(stage) · \(elapsed)s elapsed" + (elapsed >= 30 ? " · Taking longer than usual" : ""))
+                state.condition.lock()
+            }
         }
         let result = state.result
         state.condition.unlock()
         try check()
-        guard let result else { throw videoError("Preparing this video timed out.") }
+        guard let result else { throw videoError("\(stage) timed out after \(Int(timeout)) seconds. Try opening this video in Photos, then retry the album.", code: 2) }
         return try result.get()
     }
 
-    private func videoError(_ message: String) -> NSError {
-        NSError(domain: "SpatialSlideshow.Video", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    private func videoError(_ message: String, code: Int = 1) -> NSError {
+        NSError(domain: "SpatialSlideshow.Video", code: code, userInfo: [NSLocalizedDescriptionKey: message])
     }
 }

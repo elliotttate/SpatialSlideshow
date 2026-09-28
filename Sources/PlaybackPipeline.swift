@@ -27,30 +27,17 @@ enum PhotoSource {
 final class RenderSession {
     private let lock = NSLock()
     private var stopped = false
-    private var process: Process?
+    var diagnosticsDirectory: URL?
     var isCancelled: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
     func check() throws { if isCancelled { throw CancellationError() } }
-    func cancel() {
-        lock.lock(); stopped = true
-        if let process, process.isRunning { process.terminate() }
-        lock.unlock()
-    }
-    func run(_ executable: URL, _ arguments: [String], log: URL, environment overrides: [String: String] = [:]) throws {
-        let task = Process(); task.executableURL = executable; task.arguments = arguments
-        var environment = ProcessInfo.processInfo.environment; environment["SPATIAL_NO_STILLS"] = "1"; environment.merge(overrides) { _, new in new }; task.environment = environment
-        let pipe = Pipe(); task.standardOutput = pipe; task.standardError = pipe
-        lock.lock()
-        if stopped { lock.unlock(); throw CancellationError() }
-        do { try task.run(); process = task; lock.unlock() }
-        catch { lock.unlock(); throw error }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        task.waitUntilExit()
-        lock.lock(); process = nil; lock.unlock()
-        try data.write(to: log)
-        try check()
-        guard task.terminationStatus == 0 else {
-            throw NSError(domain: "SpatialSlideshow", code: Int(task.terminationStatus), userInfo: [NSLocalizedDescriptionKey: String((String(data: data, encoding: .utf8) ?? "Render failed").suffix(2400))])
-        }
+    func cancel() { lock.lock(); stopped = true; lock.unlock() }
+    func run(_ executable: URL, _ arguments: [String], log: URL, environment overrides: [String: String] = [:],
+             stage: String? = nil, timeout: TimeInterval = 180, slowAfter: TimeInterval = 30, progress: (String) -> Void = { _ in }) throws {
+        var environment = ProcessInfo.processInfo.environment
+        environment["SPATIAL_NO_STILLS"] = "1"; environment.merge(overrides) { _, new in new }
+        try HelperProcess.run(executable, arguments: arguments, log: log, environment: environment,
+                              stage: stage ?? executable.lastPathComponent, timeout: timeout, slowAfter: slowAfter,
+                              diagnostics: diagnosticsDirectory, cancelled: { self.isCancelled }, progress: progress)
     }
     func export(_ source: PhotoSource, version: PhotoVersion = .current, into directory: URL, progress: @escaping (String) -> Void = { _ in }) throws -> URL {
         try check()
@@ -90,7 +77,7 @@ final class RenderSession {
                 let elapsed = Int(Date().timeIntervalSince(started))
                 let phase = lastPercent < 0
                     ? "Waiting for Photos / iCloud to provide full quality · \(elapsed)s"
-                    : "Downloading full quality · \(lastPercent)% · \(elapsed)s"
+                    : (lastPercent >= 100 ? "Download complete; waiting for Photos to deliver the original · \(elapsed)s" : "Downloading full quality · \(lastPercent)% · \(elapsed)s")
                 lastUpdate = Date()
                 condition.unlock(); progress(phase); condition.lock()
             }
@@ -101,7 +88,7 @@ final class RenderSession {
         if isCancelled || !complete { manager.cancelImageRequest(request) }
         try check()
         guard let bytes, !bytes.isEmpty else {
-            throw error ?? NSError(domain: "SpatialSlideshow", code: 2, userInfo: [NSLocalizedDescriptionKey: complete ? "This photo could not be loaded from Photos." : "Downloading this photo timed out."])
+            throw error ?? NSError(domain: "SpatialSlideshow", code: 2, userInfo: [NSLocalizedDescriptionKey: complete ? "This photo could not be loaded from Photos." : "Photos did not deliver this original within 5 minutes. Check your internet connection and try opening it in Photos, then retry the album."])
         }
         let ext = type.flatMap { UTType($0)?.preferredFilenameExtension } ?? "heic"
         let url = directory.appendingPathComponent("input.\(ext)")
@@ -170,13 +157,13 @@ final class RenderSession {
         let input = try expandedInput(original, configuration: expansion, directory: scratch.appendingPathComponent("expansion"), tools: tools, progress: progress)
         let scene = scratch.appendingPathComponent("scene", isDirectory: true)
         progress("Creating the Photos 3D scene…")
-        try run(tools.appendingPathComponent("GenerateScene"), [input.path, scene.path], log: scratch.appendingPathComponent("inference.log"))
+        try run(tools.appendingPathComponent("GenerateScene"), [input.path, scene.path], log: scratch.appendingPathComponent("inference.log"), stage: "Creating the Photos 3D scene", progress: progress)
         try attachExpansionMetadata(input: input, configuration: expansion, scene: scene)
         let rendered = scratch.appendingPathComponent("clip.mp4")
         // Preserve each photo's aspect ratio in its clip. The player can then
         // switch between fill and fit immediately without another inference.
         progress("Rendering camera movement…")
-        try run(tools.appendingPathComponent("RenderSlideshow"), [rendered.path, String(seconds), String(motion), "source:\(longEdge)", scene.path], log: scratch.appendingPathComponent("render.log"), environment: ["SPATIAL_MOTION_PATTERN": String(motionPattern), "SPATIAL_FRAMING": "fit"])
+        try run(tools.appendingPathComponent("RenderSlideshow"), [rendered.path, String(seconds), String(motion), "source:\(longEdge)", scene.path], log: scratch.appendingPathComponent("render.log"), environment: ["SPATIAL_MOTION_PATTERN": String(motionPattern), "SPATIAL_FRAMING": "fit"], stage: "Rendering camera movement", progress: progress)
         try check()
         try FileManager.default.moveItem(at: rendered, to: output)
         try? ClipCacheCatalog.record(record, root: root)

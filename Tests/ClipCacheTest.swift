@@ -35,6 +35,18 @@ struct ClipCacheTest {
         let managedKey = "color-managed-v5|current|2|\(source.cacheIdentity)|6.0|1.0|1920"
         let managedName = SHA256.hash(data: Data(managedKey.utf8)).map { String(format: "%02x", $0) }.joined() + ".mp4"
         check(output.lastPathComponent == managedName, "Cache filenames use the color-managed-v5 render key")
+        let appleExpansion = PhotoExpansionConfiguration(percent: 5, modelFingerprint: "model")
+        var kleinExpansion = appleExpansion; kleinExpansion.backend = .fluxKlein
+        check(appleExpansion.cacheIdentity("photo") == "photo|apple-cleanup-motion-v2|5|model", "Adding FLUX preserves existing Apple expansion cache identities")
+        check(kleinExpansion.cacheIdentity("photo") != appleExpansion.cacheIdentity("photo"), "Outpainting providers cannot reuse each other's rendered clips")
+        var drawThingsExpansion = appleExpansion; drawThingsExpansion.backend = .drawThingsFlux
+        check(Set([appleExpansion, kleinExpansion, drawThingsExpansion].map { $0.cacheIdentity("photo") }).count == 3,
+              "Draw Things, MLX and Apple expansions have separate persistent clip caches")
+        check(kleinExpansion.cacheIdentity("photo") == "photo|flux-klein-motion-v1|5|model",
+              "Adding Draw Things preserves prior MLX expansion cache identities")
+        var zoomedExpansion = kleinExpansion; zoomedExpansion.zoomOutPercent = 10
+        check(zoomedExpansion.cacheIdentity("photo") != kleinExpansion.cacheIdentity("photo"), "FLUX clips respect the zoom-out override")
+        check(PhotoExpansionConfiguration.disabled.cacheIdentity("photo") == "photo", "Disabled expansion preserves original-photo caches")
         check(output.deletingLastPathComponent() == root.appendingPathComponent("Clip Cache/Color Managed v1", isDirectory: true), "Corrected renders use the versioned color-managed cache directory")
         let firstPattern = MotionStyle.varied.pattern(for: 0, sourceIdentity: source.cacheIdentity)
         let shuffledPattern = MotionStyle.varied.pattern(for: 299, sourceIdentity: source.cacheIdentity)

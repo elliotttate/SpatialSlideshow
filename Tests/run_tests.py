@@ -9,7 +9,7 @@ import time
 from test_support import ROOT, TEST_ROOT, REPORTS, developer_environment, ensure_fixtures
 
 ALL = ["storage", "preparation", "motion", "cache", "persistent-cache", "video-cache",
-       "playback", "displayed-playback", "navigation", "fullscreen", "music", "display-sleep"]
+       "playback", "displayed-playback", "navigation", "fullscreen", "music", "display-sleep", "helper-process", "native-extend-recovery"]
 CORE = ALL[:6]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--core", action="store_true", help="Skip WindowServer, audio-playback and power-assertion checks")
@@ -36,6 +36,8 @@ def commands(name):
         binary = str(executables / "ExpansionMotionTest")
         return [["xcrun", "clang++", "-O2", "-std=c++17", str(ROOT / "Tests/ExpansionMotionTest.cpp"), "-o", binary], [binary]]
     tests = {
+        "helper-process": ("HelperProcessTest", ["HelperProcess"], []),
+        "native-extend-recovery": ("NativeExtendRecoveryTest", ["NativeExtendRecovery"], []),
         "storage": ("StorageRecoveryTest", ["StorageRecovery", "AlbumPreparationQueue"], []),
         "preparation": ("AlbumPreparationQueueTest", ["AlbumPreparationQueue"], [str(REPORTS / "preparation.json")]),
         "playback": ("ContinuousPlaybackTest", ["ContinuousPlayback"], [str(fixtures / "playback-short.mp4")]),
