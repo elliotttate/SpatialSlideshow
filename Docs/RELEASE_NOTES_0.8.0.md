@@ -28,10 +28,11 @@ Generated borders can still have visible seams, incorrect geometry, or mismatche
 - All **14 synthetic suites passed**, covering preparation, storage recovery, photo/video cache persistence, playback, displayed video layers, navigation, fullscreen controls, music, display sleep, helper timeouts, and native Extend recovery.
 - All **32 Python tests passed**, covering local expansion geometry, source preservation, color/seam blending, cache corruption, local-server ownership, cancellation, and native research guards without model requests.
 - The release app and source-only research probes built successfully. The archive passed integrity and extracted-app signature checks.
+- The Developer ID signed app passed both Apple Fast Clean Up and Draw Things expansion → Apple Reframe → movie tests on a Trip photo, including persistent-cache checks. Apple accepted notarization with no issues; the stapled app passes Apple's pre-distribution checks.
 - The shuffle update was checked live on Trip with 14 distinct photos and no repeats in the observed startup sequence. Earlier Trip-only checks exercised the Draw Things expansion → Apple Reframe → video pipeline, changed-motion expanded-still reuse, and clip reuse in a separate process.
 
 ## Download and requirements
 
 Download `SpatialSlideshow-0.8.0-macOS-arm64.zip`, extract it, and open **Spatial Slideshow.app**. Requires Apple Silicon, macOS 27, and supported Photos Reframe models already installed on the Mac. Optional expansion engines have additional setup requirements; see the README.
 
-This is an ad-hoc signed, non-notarized experimental prerelease using private APIs. Compatibility across other Macs and macOS builds is not established. Apple frameworks, model weights, personal photos, generated caches, and private diagnostic logs are not included.
+The download is signed with **Developer ID Application: Brian Tate (RH4U5VJHM6)**, notarized by Apple, and includes a stapled notarization ticket. This remains an experimental prerelease using private APIs; notarization does not establish compatibility across other Macs or macOS builds. Apple frameworks, model weights, personal photos, generated caches, and private diagnostic logs are not included.

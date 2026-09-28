@@ -77,7 +77,7 @@ The build uses `DEVELOPER_DIR` when supplied. Otherwise it tries the selected fu
 DEVELOPER_DIR="/path/to/Xcode.app/Contents/Developer" ./build_slideshow.sh
 ```
 
-Builds are ad-hoc signed and not notarized. A downloaded prerelease may require macOS's normal user approval to open. Compatibility with future private framework revisions is not guaranteed.
+Local builds are ad-hoc signed and not notarized. The published **0.8.0 download is Developer ID signed, notarized by Apple, and includes a stapled ticket**. Compatibility with future private framework revisions is not guaranteed.
 
 ## Tests
 
@@ -106,5 +106,15 @@ This optional test runs the actual expansion → Reframe → render pipeline, te
 ```
 
 This creates `dist/SpatialSlideshow-0.8.0-macOS-arm64.zip` and its SHA-256 file. It does not tag, publish, or upload anything. Set `SPATIAL_APP_OUTPUT` to build a separate release bundle without replacing a running development app. The archive contains the app, icon, and helper executables; Apple frameworks and models remain system dependencies.
+
+For distribution, sign and notarize a copy of the built app using your Developer ID Application certificate and an existing `notarytool` Keychain profile:
+
+```sh
+SPATIAL_SIGN_IDENTITY='Developer ID Application: Your Name (TEAMID)' \
+SPATIAL_NOTARY_PROFILE='YourKeychainProfile' \
+./Scripts/notarize_release.sh "$PWD/build/Spatial Slideshow.app"
+```
+
+This signs embedded helpers before the app, enables Hardened Runtime with secure timestamps, submits to Apple, staples and validates the accepted ticket, and runs Gatekeeper assessment and Apple's pre-distribution checks. The final ZIP and checksum are written to `dist/notarized/`; an optional second argument chooses another output directory. The source app remains untouched. Credentials stay in Keychain, and submission logs remain in ignored `build/notarization/`. Publish this final archive, which contains the stapled app, instead of the submission ZIP. The script never uploads to GitHub.
 
 [Architecture and research notes](Docs/RESEARCH.md) describe the working model routes and their limits. [Research probes](Research/README.md) preserve source-only diagnostics; no Apple binaries, disassembly, model weights, or decompiled implementations are included.
