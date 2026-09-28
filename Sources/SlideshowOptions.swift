@@ -45,13 +45,13 @@ enum ExpansionBackend: String, CaseIterable {
     var expansionDescription: String {
         switch self {
         case .appleCleanup:
-            return "Experimental · Fast, local edge fill using the installed Photos models."
+            return "Fast, local edge fill using the installed Photos models."
         case .fluxKlein:
-            return "Experimental · Local generative outpainting. Allow several minutes per new photo; expanded stills are saved for reuse. Generated scenery may differ from the real scene."
+            return "Local generative outpainting. Allow several minutes per new photo; expanded stills are saved for reuse. Generated scenery may differ from the real scene."
         case .drawThingsFlux:
-            return "Experimental · FLUX.2 Klein 4B through Draw Things, running locally. Generates a border in four steps and preserves the original photo. Expanded stills are saved for reuse; generated scenery and background focus may differ."
+            return "FLUX.2 Klein 4B through Draw Things, running locally. Generates a border in four steps and preserves the original photo. Expanded stills are saved for reuse; generated scenery and background focus may differ."
         case .applePhotosExtend:
-            return "Research preview · Uses Apple’s online Extend service through the open Photos app. Requires the temporary SIP-disabled setup and Xcode tools. Currently enabled for the Trip album only. Expanded images are saved for reuse."
+            return "Uses Apple’s online Extend service through the open Photos app. Requires the temporary SIP-disabled setup and Xcode tools. Currently enabled for the Trip album only. Expanded images are saved for reuse."
         }
     }
 }
@@ -66,7 +66,9 @@ struct SlideshowOptions: View {
         Binding(get: { Double(model.effectiveExpansionZoomOutPercent) }, set: { model.expansionZoomOutPercent = Int($0.rounded()) })
     }
     private var motionDescription: String {
-        model.motion < 0.65 ? "Subtle" : model.motion > 1.25 ? "Strong" : "Gentle"
+        if model.motion > 3 { return "Sweeping" }
+        if model.motion > 2 { return "Lively" }
+        return model.motion < 0.65 ? "Subtle" : model.motion > 1.25 ? "Strong" : "Gentle"
     }
 
     var body: some View {
@@ -103,8 +105,18 @@ struct SlideshowOptions: View {
                             ForEach(FramingMode.allCases, id: \.self) { Text($0.title).tag($0) }
                         }.pickerStyle(.segmented)
                         Toggle("Fade between photos", isOn: $model.crossfade)
+                        Divider()
+                        Toggle("Real-time 3D rendering", isOn: $model.realtimeRendering)
+                        Text("Uses the processed 3D scene to animate at up to 60 fps. Motion, duration and zoom update live. Scenes are cached up to 4 GB; older scenes may need preparing again. Uses more GPU power than video playback. Takes effect on the next play or restart; turn off for MP4 export.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("Pause a live photo to explore: drag with the mouse or trackpad, scroll with two fingers, or hold W/A/S/D. Resume to ease back into the slideshow movement. Videos and prepared movie fallbacks keep their normal pause behavior.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Text("Framing and album fades update while you play. Fades in a saved slideshow change after rebuilding.")
                             .font(.caption).foregroundStyle(.secondary)
+                    }
+                    settingsSection("Screen Saver", symbol: "moon.stars") {
+                        ScreenSaverSettings(controller: model.screenSaver, shuffle: model.shuffleAlbum,
+                                            fillScreen: model.framing == .fill, crossfade: model.crossfade)
                     }
                     settingsSection("Camera Movement", symbol: "camera.viewfinder") {
                         HStack {
@@ -117,10 +129,13 @@ struct SlideshowOptions: View {
                         HStack {
                             Text("3D motion strength")
                             Spacer()
-                            Text(motionDescription).foregroundStyle(.secondary)
+                            Text("\(motionDescription) · \(model.motion, specifier: "%.2f")×")
+                                .monospacedDigit().foregroundStyle(.secondary)
                         }
-                        Slider(value: $model.motion, in: 0.25...1.8, step: 0.05)
+                        Slider(value: $model.motion, in: 0.25...4.0, step: 0.05)
                             .accessibilityLabel("3D motion strength")
+                        Text("Above 2×, movement curves into an orbit instead of retracing its path. From 2.5×, it completes a full circle; higher strength widens the loop. In real-time mode, movement updates while playing; prepared clips change on the next play or restart.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Text("Movement pattern").font(.subheadline)
                         VStack(spacing: 8) {
                             ForEach(0..<3, id: \.self) { row in
@@ -217,7 +232,7 @@ struct SlideshowOptions: View {
                         Divider()
                         MusicSettings(music: model.music)
                     }
-                    DisclosureGroup("Experimental research tools") {
+                    DisclosureGroup("Advanced research tools") {
                         Toggle("Show Apple Photos Extend research backend", isOn: $model.showResearchBackends)
                         Text("Requires a separate developer setup and is restricted to the Trip research album. This is not part of normal slideshow setup.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -231,6 +246,7 @@ struct SlideshowOptions: View {
                         .font(.subheadline.weight(.medium))
                     Text(model.hasPendingRenderSettings
                          ? "Restart to use the new motion, expansion, album, or quality settings now."
+                         : model.usingRealtime ? "Camera settings update live. Source, expansion, and album changes apply on the next play."
                          : "Motion, expansion, album, and quality settings apply on the next play or build.")
                         .font(.caption).foregroundStyle(.secondary)
                 }.frame(maxWidth: .infinity, alignment: .leading)
@@ -270,6 +286,48 @@ struct SlideshowOptions: View {
         .padding(16)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.1)))
+    }
+}
+
+private struct ScreenSaverSettings: View {
+    @ObservedObject var controller: ScreenSaverController
+    let shuffle: Bool
+    let fillScreen: Bool
+    let crossfade: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Play an album or build a slideshow, then use it as your macOS screen saver. It plays prepared clips or live scenes silently, even when the app is closed.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let playlist = controller.playlist {
+                Toggle("Use as a screen saver", isOn: Binding(get: { controller.enabled }, set: { controller.setEnabled($0) }))
+                Text("\(playlist.title) · \(controller.readyCount) items ready")
+                    .font(.subheadline)
+            }
+            HStack {
+                Button("Use This Slideshow") {
+                    controller.useCurrent(shuffle: shuffle, fillScreen: fillScreen, crossfade: crossfade)
+                }.disabled(controller.currentTitle == nil)
+                if let title = controller.currentTitle {
+                    Text("\(title) · \(controller.availableCount) prepared").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Button(controller.installed ? "Update Screen Saver" : "Install Screen Saver…", action: controller.install)
+                Button("macOS Screen Saver Settings…", action: controller.openSettings)
+            }
+            if let message = controller.message {
+                Text(message).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+            }
+            Text("Newly prepared items from the selected slideshow are added automatically. Framing, fades, and shuffle follow your settings. Stop slideshow playback or quit the app to let macOS start the screen saver when idle. Set its delay in macOS Settings; your lock and password settings stay under macOS control.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .onChange(of: shuffle) { _, _ in syncPresentation() }
+        .onChange(of: fillScreen) { _, _ in syncPresentation() }
+        .onChange(of: crossfade) { _, _ in syncPresentation() }
+    }
+    private func syncPresentation() {
+        controller.updatePresentation(shuffle: shuffle, fillScreen: fillScreen, crossfade: crossfade)
     }
 }
 

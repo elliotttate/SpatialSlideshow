@@ -92,7 +92,7 @@ struct PhotoExpansionConfiguration {
         guard enabled else { return .disabled }
         if backend == .applePhotosExtend {
             guard albumTitle == "Trip" else {
-                throw failure("The Apple Photos Extend research preview is currently enabled only for the Trip album.")
+                throw failure("The Apple Photos Extend backend is currently enabled only for the Trip album.")
             }
             let python = URL(fileURLWithPath: "/usr/bin/python3")
             let script = tools.appendingPathComponent("ExpandPhotoNative.py")

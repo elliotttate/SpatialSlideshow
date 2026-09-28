@@ -1,6 +1,6 @@
 # Spatial Slideshow 0.8.0
 
-Album playback now prioritizes photos that have not been shown in the current slideshow, including photos prepared during earlier sessions. Optional local FLUX outpainting, clearer preparation progress, and an experimental native Apple Photos Extend backend are also included.
+Album playback now prioritizes photos that have not been shown in the current slideshow, including photos prepared during earlier sessions. Optional local FLUX outpainting, clearer preparation progress, and a native Apple Photos Extend backend are also included.
 
 ## Playback and caching
 
@@ -13,7 +13,7 @@ Album playback now prioritizes photos that have not been shown in the current sl
 - Add **FLUX · Draw Things**, using a separately installed, pinned FLUX.2 Klein 4B runtime on Apple Silicon, and **FLUX.2 Klein · MLX** as local outpainting choices. Both save expanded stills independently of camera-motion clips.
 - Improve Draw Things scene-continuation prompts, overlapping masks, color continuity, and multiband seam blending while preserving the full-resolution source interior. Earlier processing revisions have separate cache identities.
 - Add setup instructions, runtime checks, cancellation, and idle shutdown of the app-owned Draw Things server.
-- Include **Apple Photos Extend** as an opt-in research preview restricted to the Trip album. It uses Apple's online service through the original Photos process and requires the separately configured temporary SIP-disabled research environment and Xcode tools. Network retries and persisted rate-limit cooldowns allow cached playback to continue. The app does not change security settings.
+- Include **Apple Photos Extend** as an opt-in research backend restricted to the Trip album. It uses Apple's online service through the original Photos process and requires the separately configured temporary SIP-disabled research environment and Xcode tools. Network retries and persisted rate-limit cooldowns allow cached playback to continue. The app does not change security settings.
 
 Generated borders can still have visible seams, incorrect geometry, or mismatched depth of field. The improvements do not make every expansion seamless. Apple Extend has service quotas and is unsuitable for unrestricted album-wide generation. The normal default remains expansion off; existing preferences are retained.
 
@@ -35,4 +35,4 @@ Generated borders can still have visible seams, incorrect geometry, or mismatche
 
 Download `SpatialSlideshow-0.8.0-macOS-arm64.zip`, extract it, and open **Spatial Slideshow.app**. Requires Apple Silicon, macOS 27, and supported Photos Reframe models already installed on the Mac. Optional expansion engines have additional setup requirements; see the README.
 
-The download is signed with **Developer ID Application: Brian Tate (RH4U5VJHM6)**, notarized by Apple, and includes a stapled notarization ticket. This remains an experimental prerelease using private APIs; notarization does not establish compatibility across other Macs or macOS builds. Apple frameworks, model weights, personal photos, generated caches, and private diagnostic logs are not included.
+The download is signed with **Developer ID Application: Brian Tate (RH4U5VJHM6)**, notarized by Apple, and includes a stapled notarization ticket. The app uses private APIs; notarization does not establish compatibility across other Macs or macOS builds. Apple frameworks, model weights, personal photos, generated caches, and private diagnostic logs are not included.

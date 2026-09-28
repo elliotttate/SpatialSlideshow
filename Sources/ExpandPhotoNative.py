@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Experimental original-Photos Extend bridge; no OS policy changes or library edits.
+"""Original-Photos Extend bridge; no OS policy changes or library edits.
 
 Requires the user-configured SIP-disabled research machine and open original
 Photos. The app currently restricts this backend to the Trip album. Inference

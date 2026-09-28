@@ -3,13 +3,18 @@ import AVKit
 /// Two retained players let a prepared photo dissolve over the current photo.
 /// All methods and callbacks run on the main thread.
 final class ContinuousPlayback {
-    private struct Clip { let url: URL; let number: Int }
+    private struct Clip {
+        let url: URL
+        let number: Int
+        var isScene = false
+    }
     private let players = [AVQueuePlayer(), AVQueuePlayer()]
     let videoLayers: [AVPlayerLayer]
     private var current = 0
     var player: AVQueuePlayer { players[current] }
     var transitionDuration: Double = 0.8
     var audioEnabled = true { didSet { updateAudioVolumes() } }
+    var shuffleReplays = true
     var onItem: ((Int) -> Void)?
     var onRepeat: ((Int) -> Void)?
     var onReplay: ((Int) -> Void)?
@@ -23,6 +28,25 @@ final class ContinuousPlayback {
     var onPlayingChanged: ((Bool) -> Void)?
     var onPlayerChanged: ((AVQueuePlayer) -> Void)?
     var requiresDisplayReady = false
+    /// Alternate renderers can gate transitions on an actually decoded frame.
+    var frameIsReady: ((AVPlayerLayer) -> Bool)?
+    /// A display-synchronized renderer can advance fades on its own frame clock.
+    var usesExternalFrameClock = false
+    /// Scene slots share ordering, transport and fades with the video slots.
+    /// The renderer owns decoded scenes; transport owns their animation clock.
+    private(set) var sceneURLs: [URL?] = [nil, nil]
+    private(set) var sceneGeneration = [0, 0]
+    private var sceneElapsed = [0.0, 0.0]
+    private var failedSceneURLs: [URL?] = [nil, nil]
+    var sceneDuration: Double = 9
+    var sceneIsReady: ((Int, URL) -> Bool)?
+    var sceneProgress: [Double] {
+        sceneElapsed.map { min(1, max(0, $0 / effectiveSceneDuration)) }
+    }
+    private var effectiveSceneDuration: Double {
+        sceneDuration.isFinite ? max(0.05, sceneDuration) : 9
+    }
+    var hasCurrentItem: Bool { currentClip?.isScene == true || player.currentItem != nil }
     private var pending: [Clip] = []
     private var currentClip: Clip?
     private var staged: Clip?
@@ -56,10 +80,11 @@ final class ContinuousPlayback {
     private var timer: Timer?
     private var endObserver: NSObjectProtocol?
     private var rateObservers: [NSKeyValueObservation] = []
-    var queuedCount: Int { (player.currentItem == nil ? 0 : 1) + pending.count }
+    var queuedCount: Int { (hasCurrentItem ? 1 : 0) + pending.count }
     var isTransitioning: Bool { transitionProgress != nil }
     var transitionFraction: Double { transitionProgress ?? 0 }
     var displayedNumber: Int? { currentClip?.number }
+    func hasShown(number: Int) -> Bool { shownNumbers.contains(number) }
     var isPlaying: Bool { wantsPlaying }
 
     init() {
@@ -91,7 +116,10 @@ final class ContinuousPlayback {
                   self.active, item === self.player.currentItem else { return }
             self.reachedEnd()
         }
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] _ in self?.tick() }
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { [weak self] _ in
+            guard let self, !self.usesExternalFrameClock else { return }
+            self.tick()
+        }
     }
     deinit {
         timer?.invalidate()
@@ -99,11 +127,19 @@ final class ContinuousPlayback {
     }
     func begin(loopMovie: Bool = false) {
         stop(); active = true; loopingMovie = loopMovie; productionFinished = false
+        lastTick = CACurrentMediaTime()
     }
+    func advanceFrame() { tick() }
     func addPreparedReplays(_ clips: [(URL, Int)]) {
+        addPrepared(clips.map { Clip(url: $0.0, number: $0.1) })
+    }
+    func addPreparedScenes(_ scenes: [(URL, Int)]) {
+        addPrepared(scenes.map { Clip(url: $0.0, number: $0.1, isScene: true) })
+    }
+    private func addPrepared(_ clips: [Clip]) {
         guard active, !loopingMovie else { return }
-        for (url, number) in clips where !history.contains(where: { $0.number == number }) {
-            history.append(Clip(url: url, number: number))
+        for clip in clips where !history.contains(where: { $0.number == clip.number }) {
+            history.append(clip)
         }
         if currentClip == nil, let first = history.first {
             // Cached replays are immediately useful at startup, before a slow
@@ -123,23 +159,30 @@ final class ContinuousPlayback {
         visits = [clip]; visitIndex = 0
         rememberPrepared(clip)
         rememberShown(clip)
-        player.replaceCurrentItem(with: AVPlayerItem(url: clip.url))
-        wantsPlaying = true; player.play()
+        load(clip, into: current)
+        wantsPlaying = true; if !clip.isScene { player.play() }
         if replay { onReplay?(clip.number) } else { onItem?(clip.number) }
         onPlayingChanged?(true)
         preload()
     }
     func append(_ url: URL, number: Int) {
         guard active else { return }
-        let clip = Clip(url: url, number: number)
+        append(Clip(url: url, number: number))
+    }
+    func appendScene(_ url: URL, number: Int) {
+        guard active, !loopingMovie else { return }
+        append(Clip(url: url, number: number, isScene: true))
+    }
+    private func append(_ clip: Clip) {
+        let number = clip.number, url = clip.url
         rememberPrepared(clip)
-        if player.currentItem == nil { start(clip, replay: false) }
+        if !hasCurrentItem { start(clip, replay: false) }
         else {
             // Refresh the variant for future playback without forcing an
             // already viewed cached photo back into the first-pass queue.
             pending.removeAll { $0.number == number }
             if !shownNumbers.contains(number) { pending.append(clip) }
-            if staged?.number == number, staged?.url != url,
+            if staged?.number == number, (staged?.url != url || staged?.isScene != clip.isScene),
                stagedVisitIndex == nil, !isTransitioning, !manualAdvance { clearStaged() }
             preload()
         }
@@ -149,7 +192,7 @@ final class ContinuousPlayback {
         if let staged, stagedIsReplay, shownNumbers.contains(staged.number),
            !isTransitioning && !manualAdvance { clearStaged() }
         preload()
-        if player.currentItem == nil && active { active = false; onFinished?() }
+        if !hasCurrentItem && active { active = false; onFinished?() }
     }
     func stop() {
         epoch += 1; active = false; wantsPlaying = false; repeatSeeking = false
@@ -157,13 +200,13 @@ final class ContinuousPlayback {
         history.removeAll(); shownNumbers.removeAll(); roundShownNumbers.removeAll()
         visits.removeAll(); visitIndex = -1; stagedVisitIndex = nil; manualAdvance = false; stagedManual = false
         stagedPrerollStarted = false
-        for p in players { p.pause(); p.removeAllItems() }
+        for index in players.indices { clearSlot(index) }
         setOpacity(current: 1, incoming: 0)
         updatePlaybackWait(nil); reportedCurrentFailure = nil
         onPlayingChanged?(false)
     }
     func togglePlayback() {
-        guard player.currentItem != nil else { return }
+        guard hasCurrentItem else { return }
         transportEpoch += 1
         wantsPlaying.toggle()
         setTransport(playing: wantsPlaying)
@@ -172,7 +215,7 @@ final class ContinuousPlayback {
     func previousPhoto() { navigate(forward: false) }
     func nextPhoto() { navigate(forward: true) }
     private func navigate(forward: Bool) {
-        guard player.currentItem != nil else { return }
+        guard hasCurrentItem else { return }
         if loopingMovie {
             let time = player.currentTime().seconds
             let index = moviePhotoStarts.lastIndex(where: { $0 <= time + 0.05 }) ?? 0
@@ -188,7 +231,8 @@ final class ContinuousPlayback {
         active = true
         if !forward {
             guard visitIndex > 0 else {
-                player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+                if currentClip?.isScene == true { restartScene(at: current) }
+                else { player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) }
                 return
             }
             clearStaged()
@@ -204,10 +248,88 @@ final class ContinuousPlayback {
     private func stageVisit(at index: Int) {
         staged = visits[index]; stagedVisitIndex = index; stagedIsReplay = false
         stagedLoadedAt = CACurrentMediaTime()
-        incoming.replaceCurrentItem(with: AVPlayerItem(url: visits[index].url))
+        load(visits[index], into: 1 - current)
         stagedPrerollStarted = false
     }
     private var incoming: AVQueuePlayer { players[1 - current] }
+    private func load(_ clip: Clip, into slot: Int) {
+        clearSlot(slot)
+        if clip.isScene {
+            sceneURLs[slot] = clip.url
+            sceneGeneration[slot] += 1
+        } else {
+            players[slot].replaceCurrentItem(with: AVPlayerItem(url: clip.url))
+        }
+    }
+    private func clearSlot(_ slot: Int) {
+        players[slot].pause()
+        players[slot].removeAllItems()
+        sceneURLs[slot] = nil
+        failedSceneURLs[slot] = nil
+        sceneElapsed[slot] = 0
+    }
+    private func restartScene(at slot: Int) {
+        sceneElapsed[slot] = 0
+        sceneGeneration[slot] += 1
+    }
+    private func slotIsReady(_ slot: Int) -> Bool {
+        if let url = sceneURLs[slot] {
+            return failedSceneURLs[slot] != url && (sceneIsReady?(slot, url) ?? false)
+        }
+        return players[slot].currentItem?.status == .readyToPlay &&
+            (!requiresDisplayReady || isFrameReady(videoLayers[slot]))
+    }
+    /// A renderer may fail over to an existing clip without losing the photo's
+    /// identity, viewing history, or its place in the album's first pass.
+    func replaceSceneWithClip(sceneURL: URL, clipURL: URL) {
+        func replacement(_ clip: Clip) -> Clip {
+            clip.isScene && clip.url == sceneURL ? Clip(url: clipURL, number: clip.number) : clip
+        }
+        history = history.map(replacement)
+        pending = pending.map(replacement)
+        visits = visits.map(replacement)
+        internalTransport = true
+        defer { internalTransport = false }
+        if let clip = currentClip, clip.isScene, clip.url == sceneURL {
+            let updated = replacement(clip)
+            currentClip = updated
+            currentLoadedAt = CACurrentMediaTime()
+            reportedCurrentFailure = nil
+            load(updated, into: current)
+            if wantsPlaying { player.play() }
+        }
+        if let clip = staged, clip.isScene, clip.url == sceneURL {
+            let updated = replacement(clip)
+            staged = updated
+            stagedLoadedAt = CACurrentMediaTime()
+            load(updated, into: 1 - current)
+            stagedPrerollStarted = false
+            // A failed incoming renderer must not leave an incomplete dissolve
+            // visible while its fallback clip is still decoding.
+            if isTransitioning {
+                transitionProgress = nil
+                manualAdvance = true
+                setOpacity(current: 1, incoming: 0)
+            }
+        }
+        updatePlaybackWait(nil)
+        preload()
+    }
+    func sceneFailed(slot: Int, url: URL, error: Error) {
+        guard active, players.indices.contains(slot), sceneURLs[slot] == url,
+              failedSceneURLs[slot] != url else { return }
+        failedSceneURLs[slot] = url
+        if slot == current {
+            if let clip = currentClip { discardFailed(clip) }
+        } else if let failed = staged {
+            discardFailed(failed)
+            transitionProgress = nil
+            setOpacity(current: 1, incoming: 0)
+            clearStaged()
+        }
+        onFailure?(error)
+        preload()
+    }
     private func rememberPrepared(_ clip: Clip) {
         // A newly prepared variant replaces an older cached render even when
         // this photo has already been seen and does not need another turn.
@@ -264,7 +386,7 @@ final class ContinuousPlayback {
         let clip: Clip
         if let next = pending.first {
             clip = next; stagedIsReplay = false
-        } else if let unseen = history.filter({ !shownNumbers.contains($0.number) }).randomElement() {
+        } else if let unseen = chooseReplay(history.filter({ !shownNumbers.contains($0.number) })) {
             clip = unseen; stagedIsReplay = true
         } else {
             guard !productionFinished else { return }
@@ -275,23 +397,28 @@ final class ContinuousPlayback {
                 roundShownNumbers.removeAll()
                 remaining = alternatives
             }
-            guard let replay = remaining.randomElement() else { return }
+            guard let replay = chooseReplay(remaining) else { return }
             clip = replay; stagedIsReplay = true
         }
         staged = clip
         stagedLoadedAt = CACurrentMediaTime()
-        incoming.replaceCurrentItem(with: AVPlayerItem(url: clip.url))
+        load(clip, into: 1 - current)
         stagedPrerollStarted = false
+    }
+    private func chooseReplay(_ candidates: [Clip]) -> Clip? {
+        shuffleReplays ? candidates.randomElement() : candidates.first
     }
     private func clearStaged() {
         incoming.cancelPendingPrerolls()
-        incoming.pause(); incoming.replaceCurrentItem(with: nil)
+        clearSlot(1 - current)
         staged = nil; stagedIsReplay = false; stagedVisitIndex = nil; manualAdvance = false; stagedManual = false
         stagedPrerollStarted = false
     }
     private var nextReady: Bool {
-        guard staged != nil, incoming.currentItem?.status == .readyToPlay else { return false }
-        return !requiresDisplayReady || videoLayers[1 - current].isReadyForDisplay
+        staged != nil && slotIsReady(1 - current)
+    }
+    private func isFrameReady(_ layer: AVPlayerLayer) -> Bool {
+        frameIsReady?(layer) ?? layer.isReadyForDisplay
     }
     private func updatePlaybackWait(_ message: String?) {
         guard message != playbackWaitMessage else { return }
@@ -300,8 +427,7 @@ final class ContinuousPlayback {
     }
     private func reportReadinessWait(at now: TimeInterval) {
         let item: AVPlayerItem?, clip: Clip?, since: TimeInterval
-        let currentReady = player.currentItem?.status == .readyToPlay &&
-            (!requiresDisplayReady || videoLayers[current].isReadyForDisplay)
+        let currentReady = slotIsReady(current)
         if !currentReady, currentClip != nil {
             item = player.currentItem; clip = currentClip; since = currentLoadedAt
         } else if staged != nil, !nextReady {
@@ -315,10 +441,14 @@ final class ContinuousPlayback {
         updatePlaybackWait(detail)
     }
     private func tick() {
-        let now = CACurrentMediaTime(), delta = min(now - lastTick, 0.1)
+        let now = CACurrentMediaTime(), delta = max(0, min(now - lastTick, 0.1))
         lastTick = now
         guard active else { return }
         reportReadinessWait(at: now)
+        if sceneURLs[current] != nil, failedSceneURLs[current] == sceneURLs[current] {
+            preload()
+            if nextReady { completeTransition(); return }
+        }
         if let item = player.currentItem, item.status == .failed {
             if reportedCurrentFailure != ObjectIdentifier(item) {
                 reportedCurrentFailure = ObjectIdentifier(item)
@@ -339,7 +469,7 @@ final class ContinuousPlayback {
         }
         // Replacing the item is asynchronous. Preroll before ReadyToPlay raises
         // an Objective-C exception, especially when navigating larger clips.
-        if staged != nil, !stagedPrerollStarted,
+        if let staged, !staged.isScene, !stagedPrerollStarted,
            incoming.status == .readyToPlay, incoming.currentItem?.status == .readyToPlay {
             stagedPrerollStarted = true
             incoming.preroll(atRate: 1) { _ in }
@@ -352,6 +482,12 @@ final class ContinuousPlayback {
             } else { completeTransition() }
         }
         guard wantsPlaying else { return }
+        if sceneURLs[current] != nil, slotIsReady(current) {
+            sceneElapsed[current] = min(effectiveSceneDuration, sceneElapsed[current] + delta)
+        }
+        if isTransitioning, sceneURLs[1 - current] != nil, nextReady {
+            sceneElapsed[1 - current] = min(effectiveSceneDuration, sceneElapsed[1 - current] + delta)
+        }
         if let progress = transitionProgress {
             let fraction = min(1, progress + delta / transitionLength)
             transitionProgress = fraction
@@ -359,11 +495,20 @@ final class ContinuousPlayback {
             if fraction >= 1 { completeTransition() }
             return
         }
-        guard !loopingMovie, !repeatSeeking, nextReady,
-              let item = player.currentItem, item.status == .readyToPlay else { return }
-        let remaining = item.duration.seconds - player.currentTime().seconds
+        if currentClip?.isScene == true, slotIsReady(current), sceneElapsed[current] >= effectiveSceneDuration {
+            reachedEnd()
+            return
+        }
+        guard !loopingMovie, !repeatSeeking, nextReady, slotIsReady(current) else { return }
+        let remaining: Double
+        if currentClip?.isScene == true { remaining = effectiveSceneDuration - sceneElapsed[current] }
+        else if let item = player.currentItem { remaining = item.duration.seconds - player.currentTime().seconds }
+        else { return }
         if remaining.isFinite, remaining > 0, remaining <= max(0.02, transitionDuration), transitionDuration > 0 {
-            transitionLength = max(0.05, min(transitionDuration, remaining))
+            // A successor may become ready just before the outgoing clip ends.
+            // Hold its final frame through the full fade instead of squeezing
+            // the transition into the last few milliseconds of that clip.
+            transitionLength = transitionDuration
             startTransition()
         }
     }
@@ -381,14 +526,16 @@ final class ContinuousPlayback {
     }
     private func startTransition() {
         guard nextReady, !isTransitioning else { return }
-        transitionProgress = 0; incoming.play(); setOpacity(current: 1, incoming: 0)
+        transitionProgress = 0
+        if staged?.isScene != true { incoming.play() }
+        setOpacity(current: 1, incoming: 0)
         if let from = currentClip, let to = staged { onTransition?(from.number, to.number, stagedIsReplay) }
     }
     private func completeTransition() {
         guard let clip = staged else { return }
         internalTransport = true
         defer { internalTransport = false }
-        let old = player, replay = stagedIsReplay, navigation = stagedVisitIndex, manual = stagedManual
+        let oldSlot = current, replay = stagedIsReplay, navigation = stagedVisitIndex, manual = stagedManual
         rememberShown(clip)
         if let navigation { visitIndex = navigation }
         else {
@@ -399,14 +546,14 @@ final class ContinuousPlayback {
         currentLoadedAt = stagedLoadedAt
         transitionProgress = nil; staged = nil; stagedIsReplay = false; stagedVisitIndex = nil; manualAdvance = false; stagedManual = false
         setOpacity(current: 1, incoming: 0)
-        old.pause(); old.replaceCurrentItem(with: nil)
+        clearSlot(oldSlot)
         onPlayerChanged?(player)
         if navigation != nil { onNavigation?(clip.number) }
         else {
             if replay { onReplay?(clip.number) } else { onItem?(clip.number) }
             if manual { onNavigation?(clip.number) }
         }
-        if wantsPlaying { player.play() } else { player.pause() }
+        if wantsPlaying && !clip.isScene { player.play() } else { player.pause() }
         preload()
     }
     private func reachedEnd() {
@@ -422,6 +569,10 @@ final class ContinuousPlayback {
         guard let number = currentClip?.number else { return }
         onRepeat?(number)
         guard active else { return }
+        if currentClip?.isScene == true {
+            restartScene(at: current)
+            return
+        }
         repeatSeeking = true
         let generation = epoch
         player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] completed in

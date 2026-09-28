@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(prefix="spatial-model-test-") as scratch:
     enums = scratch / "Enums.swift"
     enums.write_text(enum_declarations())
     binary = scratch / "ExpansionPipelineTest"
-    sources = ["ClipCacheCatalog", "PlaybackPipeline", "HelperProcess", "RuntimeInstaller", "NativeExtendRecovery", "PhotoExpansion", "VideoClipCache", "StorageRecovery"]
+    sources = ["ClipCacheCatalog", "SceneCache", "PlaybackPipeline", "HelperProcess", "RuntimeInstaller", "NativeExtendRecovery", "PhotoExpansion", "VideoClipCache", "StorageRecovery"]
     subprocess.run(["xcrun", "swiftc", "-O", str(enums)] + [str(ROOT / "Sources" / f"{name}.swift") for name in sources] +
                    [str(ROOT / "Tests/ExpansionPipelineTest.swift"), "-o", str(binary)], env=env, check=True)
     subprocess.run([str(binary), str(source), str(args.tools.resolve()), str(output), args.backend, str(args.percent)], check=True, env=env)

@@ -1,7 +1,7 @@
 #import "NativeGaussian.h"
 #import <AVFoundation/AVFoundation.h>
 #include <algorithm>
-#include "ExpansionMotion.h"
+#include "CameraMotion.h"
 
 static void require(BOOL ok, NSError *error, NSString *operation) {
     if (!ok) { fprintf(stderr, "ERROR: %s: %s\n", operation.UTF8String, error.description.UTF8String ?: "failed"); exit(1); }
@@ -148,29 +148,12 @@ static SpatialScene *loadScene(NSString *root, id<MTLDevice> device, id<MTLComma
 }
 
 static CIImage *renderFrame(SpatialScene *scene, id<MTLCommandQueue> queue, float progress, float strength, int width, int height, CGColorSpaceRef linear) {
-    float t = std::clamp(progress,0.f,1.f);
-    float eased = t*t*(3-2*t), sweep = 2*eased-1;
-    float arch = sinf(t*M_PI);
     // All paths operate in the actual predicted 3D scene. Scale translation by
     // foreground depth so distant sky cannot produce excessive camera travel.
-    vector_float3 offset;
-    switch(scene.motionPattern % 6) {
-        case 0: offset={ .065f*sweep, .018f*arch, .015f*arch}; break; // left to right
-        case 1: offset={-.065f*sweep,-.018f*arch, .015f*arch}; break; // right to left
-        case 2: offset={ .020f*sweep,-.010f*sweep,-.015f+.045f*eased}; break; // push in
-        case 3: offset={-.020f*sweep, .012f*sweep, .030f-.050f*eased}; break; // pull back
-        case 4: offset={ .045f*sweep, .028f*sweep, .010f*arch}; break; // diagonal
-        default:offset={ .012f*arch, .045f*sweep, .012f*arch}; break; // vertical
-    }
-    vector_float3 eye = offset * scene.travelDepth * strength;
-    float zoom=1.06f;
-    // Leave the established camera arithmetic untouched for ordinary scenes.
-    // Expansion is opt-in per scene; no sidecar means identical old motion.
-    if (scene.expansionPercent > 0.f) {
-        const auto motion = spatial::expansionMotion(scene.motionPattern, progress, strength, scene.expansionPercent, scene.zoomOutPercent);
-        eye *= motion.travelScale;
-        zoom = motion.zoom;
-    }
+    const auto motion = spatial::cameraMotion(scene.motionPattern, progress, scene.travelDepth,
+                                              strength, scene.expansionPercent, scene.zoomOutPercent);
+    const vector_float3 eye = motion.eye;
+    const float zoom = motion.zoom;
     matrix_float4x4 view = lookAt(eye,(vector_float3){0,0,scene.focus});
     matrix_float4x4 projection = {};
     // The predictor's square canonical rays span [-1,1] on both axes. Restore
@@ -210,7 +193,7 @@ int main(int argc, const char **argv) { @autoreleasepool {
         float scale=longEdge/std::max(sourceWidth,sourceHeight);
         width=std::max(256,(int)round(sourceWidth*scale/2)*2); height=std::max(256,(int)round(sourceHeight*scale/2)*2);
     } else if(sscanf(argv[4],"%dx%d",&width,&height)!=2)width=height=atoi(argv[4]);
-    require(duration>=2 && duration<=60 && strength>=0 && strength<=2 && width>=256 && height>=256 && width<=3840 && height<=3840 && width%2==0 && height%2==0,nil,@"Invalid slideshow settings");
+    require(duration>=2 && duration<=60 && strength>=0 && strength<=spatial::maxMotionStrength && width>=256 && height>=256 && width<=3840 && height<=3840 && width%2==0 && height%2==0,nil,@"Invalid slideshow settings (motion strength must be 0–4)");
     require(![[NSFileManager defaultManager] fileExistsAtPath:output],nil,@"Output already exists");
     require(dlopen("/System/Library/PrivateFrameworks/CoreRE3DGSFoundation.framework/CoreRE3DGSFoundation",RTLD_NOW)!=nullptr,nil,@"Load Apple renderer");
     id<MTLDevice> device=MTLCreateSystemDefaultDevice(); require(device!=nil,nil,@"Metal unavailable");

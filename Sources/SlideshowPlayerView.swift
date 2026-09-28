@@ -3,15 +3,22 @@ import AVKit
 final class SlideshowPlayerView: AVPlayerView {
     private weak var playback: ContinuousPlayback?
     private let videoHost = SlideshowVideoHost()
+    private var liveSurface: LivePlaybackSurface?
     private var fillScreen = true
     private var windowFullscreen = false
     private var keyMonitor: Any?
+    private var focusObservers: [NSObjectProtocol] = []
+    private var cameraDragPoint: NSPoint?
     private let transportBar = SlideshowTransportBar()
     private var controlsTimer: Timer?
     private var lastActivity = CACurrentMediaTime()
     private var lastPlaying: Bool?
     var arePhotoControlsVisible: Bool { !transportBar.isHidden }
     var onWindowChanged: ((NSWindow) -> Void)?
+    var onSceneLoaded: ((URL) -> Void)?
+    var onLiveFallback: ((String) -> Void)?
+    var canExplorePausedScene: Bool { liveSurface?.canExplore == true }
+    var manualCameraOffset: CGPoint { liveSurface?.manualCameraOffset ?? .zero }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -32,19 +39,59 @@ final class SlideshowPlayerView: AVPlayerView {
     required init?(coder: NSCoder) { super.init(coder: coder) }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        clearManualInput()
+        focusObservers.forEach { NotificationCenter.default.removeObserver($0) }; focusObservers = []
         guard let window else { return }
         window.acceptsMouseMovedEvents = true
         onWindowChanged?(window)
         if keyMonitor == nil {
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .mouseMoved, .leftMouseDown, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp, .mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp, .rightMouseDown, .otherMouseDown, .scrollWheel]) { [weak self] event in
                 guard let self, let window = self.window, event.window === window else { return event }
                 self.revealPhotoControls()
+                if event.type == .keyUp, self.liveSurface?.setManualKey(event.keyCode, pressed: false) == true { return nil }
                 if event.type == .keyDown, self.handlePhotoKey(event) { return nil }
+                if self.handleManualPointer(event) { return nil }
                 return event
             }
         }
+        for (name, object) in [(NSWindow.didResignKeyNotification, window as AnyObject),
+                               (NSApplication.didResignActiveNotification, NSApp as AnyObject)] {
+            focusObservers.append(NotificationCenter.default.addObserver(forName: name, object: object, queue: .main) { [weak self] _ in
+                self?.clearManualInput()
+            })
+        }
     }
-    deinit { controlsTimer?.invalidate(); if let keyMonitor { NSEvent.removeMonitor(keyMonitor) } }
+    deinit {
+        controlsTimer?.invalidate(); if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        focusObservers.forEach { NotificationCenter.default.removeObserver($0) }
+    }
+    func clearManualInput() { cameraDragPoint = nil; liveSurface?.clearManualKeys() }
+
+    // Route only gestures that start over the image, leaving the sidebar,
+    // transport buttons, settings and album browser with their normal behavior.
+    @discardableResult
+    func handleManualPointer(_ event: NSEvent) -> Bool {
+        if event.type == .leftMouseUp, cameraDragPoint != nil { cameraDragPoint = nil; return true }
+        guard window?.attachedSheet == nil, canExplorePausedScene else { cameraDragPoint = nil; return false }
+        let point = convert(event.locationInWindow, from: nil)
+        if event.type == .leftMouseDragged, let previous = cameraDragPoint {
+            cameraDragPoint = point
+            return liveSurface?.moveManualCamera(x: -(point.x-previous.x)/max(1,bounds.width)*4,
+                                                  y: (point.y-previous.y)/max(1,bounds.height)*4) == true
+        }
+        guard bounds.contains(point),
+              transportBar.isHidden || !transportBar.bounds.contains(transportBar.convert(event.locationInWindow, from: nil)) else { return false }
+        if event.type == .leftMouseDown {
+            window?.makeFirstResponder(self); cameraDragPoint = point
+            return true
+        }
+        if event.type == .scrollWheel {
+            let multiplier: CGFloat = event.hasPreciseScrollingDeltas ? 1 : 12
+            return liveSurface?.moveManualCamera(x: -event.scrollingDeltaX*multiplier/max(1,bounds.width)*4,
+                                                  y: event.scrollingDeltaY*multiplier/max(1,bounds.height)*4) == true
+        }
+        return false
+    }
     private func configureButton(_ button: NSButton, symbol: String, label: String, identifier: String, action: Selector) {
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         button.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 22, weight: .medium)
@@ -69,12 +116,13 @@ final class SlideshowPlayerView: AVPlayerView {
             transportBar.playPause.setAccessibilityLabel(playing ? "Pause" : "Play")
             transportBar.playPause.toolTip = playing ? "Pause" : "Play"
         }
-        let enabled = player?.currentItem != nil
+        let enabled = playback?.hasCurrentItem ?? (player?.currentItem != nil)
+        toolTip = canExplorePausedScene ? "Drag or scroll to explore · W/A/S/D move the camera · Space resumes" : nil
         for button in transportBar.buttons { button.isEnabled = enabled }
         transportBar.fullscreen.isEnabled = window != nil && (enabled || windowFullscreen)
     }
-    @objc private func previousPhoto(_ sender: Any?) { playback?.previousPhoto(); revealPhotoControls() }
-    @objc private func nextPhoto(_ sender: Any?) { playback?.nextPhoto(); revealPhotoControls() }
+    @objc private func previousPhoto(_ sender: Any?) { clearManualInput(); playback?.previousPhoto(); revealPhotoControls() }
+    @objc private func nextPhoto(_ sender: Any?) { clearManualInput(); playback?.nextPhoto(); revealPhotoControls() }
     @objc private func toggleFullscreen(_ sender: Any?) {
         window?.toggleFullScreen(nil)
         revealPhotoControls()
@@ -84,10 +132,12 @@ final class SlideshowPlayerView: AVPlayerView {
         else if player?.rate == 0 { player?.play() } else { player?.pause() }
         revealPhotoControls()
     }
-    private func handlePhotoKey(_ event: NSEvent) -> Bool {
+    @discardableResult
+    func handlePhotoKey(_ event: NSEvent) -> Bool {
         guard window?.attachedSheet == nil, !(window?.firstResponder is NSTextView),
               !(window?.firstResponder is NSTextField),
               event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
+        if liveSurface?.setManualKey(event.keyCode, pressed: true) == true { return true }
         switch event.keyCode {
         case 123: previousPhoto(nil)
         case 124: nextPhoto(nil)
@@ -130,6 +180,28 @@ final class SlideshowPlayerView: AVPlayerView {
         revealPhotoControls()
         layoutVideo()
     }
+    func setRealtime(_ enabled: Bool, settings: LiveRenderSettings, fallbackClips: [URL: URL]) {
+        guard let playback else { return }
+        if enabled {
+            if liveSurface == nil, let overlay = contentOverlayView {
+                let surface = LivePlaybackSurface(frame: overlay.bounds)
+                guard surface.available else { return }
+                surface.autoresizingMask = [.width, .height]
+                surface.onSceneLoaded = { [weak self] in self?.onSceneLoaded?($0) }
+                surface.onFallback = { [weak self] in self?.onLiveFallback?($0) }
+                surface.settings = settings
+                surface.bind(playback)
+                overlay.addSubview(surface, positioned: .below, relativeTo: transportBar)
+                playback.videoLayers.forEach { $0.removeFromSuperlayer() }
+                videoHost.isHidden = true; liveSurface = surface
+            }
+            liveSurface?.settings = settings; liveSurface?.fallbackClips = fallbackClips
+        } else if let surface = liveSurface {
+            surface.unbind(); surface.removeFromSuperview(); liveSurface = nil
+            videoHost.isHidden = false
+            playback.videoLayers.forEach { videoHost.layer?.addSublayer($0) }
+        }
+    }
     override func layout() { super.layout(); layoutVideo() }
     private func layoutVideo() {
         guard let playback else { return }
@@ -155,6 +227,10 @@ final class SlideshowPlayerView: AVPlayerView {
         revealPhotoControls()
         if handlePhotoKey(event) { return }
         super.keyDown(with: event)
+    }
+    override func keyUp(with event: NSEvent) {
+        if liveSurface?.setManualKey(event.keyCode, pressed: false) == true { return }
+        super.keyUp(with: event)
     }
 }
 

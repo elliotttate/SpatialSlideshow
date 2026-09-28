@@ -26,7 +26,7 @@ with tempfile.TemporaryDirectory(prefix="spatial-runtime-installer-test-") as te
     binary = temporary / "RuntimeInstallerTest"
     # Compile actual production dependencies, as the persistent-cache suite
     # does. No mock RuntimeInstaller, HelperProcess, or runtime lookup is used.
-    sources = ["PlaybackPipeline", "HelperProcess", "RuntimeInstaller", "NativeExtendRecovery",
+    sources = ["PlaybackPipeline", "SceneCache", "HelperProcess", "RuntimeInstaller", "NativeExtendRecovery",
                "PhotoExpansion", "VideoClipCache", "StorageRecovery", "ClipCacheCatalog"]
     subprocess.run(["xcrun", "swiftc", "-O", "-target", "arm64-apple-macos27.0", "-file-prefix-map", f"{ROOT}=.",
                     str(enums), *[str(ROOT / "Sources" / (name + ".swift")) for name in sources],

@@ -28,6 +28,7 @@ def ensure_fixtures():
         "playback-short.mp4": ("testsrc2=size=640x360:rate=30", "1"),
         "playback-second.mp4": ("color=c=royalblue:size=640x360:rate=30", "1"),
         "playback-long.mp4": ("testsrc2=size=640x360:rate=30", "32"),
+        "playback-screen-saver.mp4": ("testsrc2=size=640x360:rate=30", "6"),
     }
     for filename, (source, duration) in videos.items():
         target = directory / filename

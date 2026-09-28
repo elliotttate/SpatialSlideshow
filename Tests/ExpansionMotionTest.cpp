@@ -1,4 +1,4 @@
-#include "../Sources/ExpansionMotion.h"
+#include "../Sources/CameraMotion.h"
 #include <simd/simd.h>
 #include <cassert>
 #include <cstdint>
@@ -30,7 +30,7 @@ static vector_float3 legacyEye(unsigned pattern, float progress, float depth, fl
 int main() {
     unsigned compatibilitySamples = 0;
     for (unsigned pattern=0; pattern<6; ++pattern) for (int frame=0; frame<=180; ++frame)
-        for (float strength : {0.f, .3f, .65f, 1.f, 2.f}) for (float depth : {.05f, 1.f, 3.725f, 100.f}) {
+        for (float strength : {0.f, .3f, .65f, 1.f, 1.8f, 2.f}) for (float depth : {.05f, 1.f, 3.725f, 100.f}) {
             float progress=frame/180.f;
             const auto oldEye=legacyEye(pattern,progress,depth,strength);
             const auto noExpansion=spatial::expansionMotion(pattern,progress,strength,0);
@@ -38,6 +38,13 @@ int main() {
             optionalEye *= noExpansion.travelScale;
             for (int axis=0;axis<3;++axis) assert(bits(optionalEye[axis])==bits(oldEye[axis]));
             assert(bits(noExpansion.zoom)==bits(1.06f));
+            for (float percent : {0.f, 5.f, 20.f}) for (float allowance : {0.f, 10.f, 40.f}) {
+                const auto modifier=spatial::expansionMotion(pattern,progress,strength,percent,allowance);
+                const auto expected=oldEye * modifier.travelScale;
+                const auto actual=spatial::cameraMotion(pattern,progress,depth,strength,percent,allowance);
+                for (int axis=0;axis<3;++axis) assert(bits(actual.eye[axis])==bits(expected[axis]));
+                assert(bits(actual.zoom)==bits(modifier.zoom));
+            }
             ++compatibilitySamples;
         }
     printf("PASS no-expansion bit compatibility: %u camera samples\n", compatibilitySamples);
@@ -110,4 +117,70 @@ int main() {
     for(float invalid : {-10.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()})
         assert(close(spatial::expansionMotion(2,.5f,1,20,invalid).zoom,spatial::expansionMotion(2,.5f,1,20).zoom));
     puts("PASS zero-allowance compatibility, monotonic widening, original zoom-in endpoint, canvas limit, reversal, stillness, invalid allowances");
+
+    // Higher strengths must orbit, not visit the same points backwards.
+    // Check all paths, both expansion extremes, closure, tangent continuity,
+    // bounded excursion, and nonzero enclosed area.
+    for (unsigned pattern=0;pattern<6;++pattern) for (float percent : {0.f,5.f,20.f}) {
+        const auto start=spatial::cameraPathOffset(pattern,0);
+        const auto end=spatial::cameraPathOffset(pattern,1);
+        const auto center=(start+end)*.5f;
+        const auto radius=(end-start)*.5f;
+        double previousDistance=0;
+        for (int step=50;step<=80;++step) {
+            const float strength=step*.05f;
+            auto last=spatial::cameraMotion(pattern,0,1,strength,percent,percent*2);
+            const auto loopEnd=spatial::cameraMotion(pattern,1,1,strength,percent,percent*2);
+            assert(simd_length(last.eye-loopEnd.eye)<.000001f && close(last.zoom,loopEnd.zoom));
+            double distance=0;
+            for (int frame=1;frame<=1200;++frame) {
+                const float t=frame/1200.f;
+                const auto value=spatial::cameraMotion(pattern,t,1,strength,percent,percent*2);
+                const auto scale=spatial::expansionMotion(pattern,t,2,percent).travelScale;
+                const auto orbitOffset=value.eye/(2*scale)-center;
+                assert(simd_length(orbitOffset)<=simd_length(radius)+.000001f);
+                assert(std::isfinite(value.zoom));
+                distance+=simd_length(value.eye-last.eye);
+                last=value;
+            }
+            assert(distance+0.00001>=previousDistance);
+            previousDistance=distance;
+        }
+        const auto first=spatial::cameraMotion(pattern,0,1,4,percent,percent*2);
+        const auto last=spatial::cameraMotion(pattern,1,1,4,percent,percent*2);
+        const auto q1=spatial::cameraMotion(pattern,.25f,1,4,percent,percent*2);
+        const auto q3=spatial::cameraMotion(pattern,.75f,1,4,percent,percent*2);
+        assert(simd_length(first.eye-last.eye)<.000001f && close(first.zoom,last.zoom));
+        assert(simd_length(q1.eye-q3.eye)>.02f); // Distinct sides of the loop.
+        const float delta=.0001f;
+        const auto after=spatial::cameraMotion(pattern,delta,1,4,percent,percent*2);
+        const auto before=spatial::cameraMotion(pattern,1-delta,1,4,percent,percent*2);
+        const auto outgoing=(after.eye-first.eye)/delta;
+        const auto incoming=(last.eye-before.eye)/delta;
+        assert(simd_dot(simd_normalize(outgoing),simd_normalize(incoming))>.999f);
+        assert(simd_length(incoming)>.1f); // No turnaround pause at the seam.
+        vector_float3 area={0,0,0};
+        auto previous=first;
+        for (int frame=1;frame<=1200;++frame) {
+            const auto current=spatial::cameraMotion(pattern,frame/1200.f,1,4,percent,percent*2);
+            area+=simd_cross(previous.eye,current.eye);
+            previous=current;
+        }
+        assert(simd_length(area)>.01f);
+        for (int frame=0;frame<=180;++frame) {
+            const float t=frame/180.f;
+            const auto low=spatial::cameraMotion(pattern,t,1,2,percent,percent*2);
+            const auto high=spatial::cameraMotion(pattern,t,1,2.000001f,percent,percent*2);
+            assert(simd_length(low.eye-high.eye)<.000001f && close(low.zoom,high.zoom));
+            const auto full=spatial::cameraMotion(pattern,t,1,2.5f,percent,percent*2);
+            const auto almost=spatial::cameraMotion(pattern,t,1,2.499999f,percent,percent*2);
+            assert(simd_length(full.eye-almost.eye)<.000001f && close(full.zoom,almost.zoom));
+        }
+    }
+    for(float invalid : {-1.f,std::numeric_limits<float>::infinity(),std::numeric_limits<float>::quiet_NaN()}) {
+        const auto traversal=spatial::motionTraversal(invalid,invalid);
+        assert(traversal.progress==0 && traversal.strength==0 && traversal.orbitBlend==0);
+    }
+    assert(close(spatial::motionTraversal(1,100).orbitAngle,2*M_PI));
+    puts("PASS high-strength orbits: bounded excursion, distinct return arc, increasing arc length, closed full circle, continuous seam velocity, synchronized zoom, threshold continuity");
 }

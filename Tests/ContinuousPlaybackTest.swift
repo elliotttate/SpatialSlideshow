@@ -42,6 +42,7 @@ struct ContinuousPlaybackTest {
         precondition(repeats >= 2, "Must repeat while the next photo is missing")
         playback.append(clip, number: 1); playback.finishPreparing()
         pump(3)
+        print("DELAYED_METRICS", "items=\(items)", "finishes=\(finishes)", "retained=\(playback.player.currentItem != nil)", "rate=\(playback.player.rate)", "frames=\(frameSamples)", "empty=\(emptySamples)", "black=\(darkFrames)", "dissolve=\(dissolveSamples)")
         precondition(items == [0, 1] && finishes == 1, "Late photo must advance and finish once")
         precondition(playback.player.currentItem != nil && playback.player.rate == 0, "Final photo must stay visible")
         precondition(emptySamples == 0 && darkFrames == 0 && frameSamples > 30, "No empty player or black decoded frames")
@@ -67,6 +68,26 @@ struct ContinuousPlaybackTest {
         playback.togglePlayback(); playback.stop(); pump(0.3)
         precondition(playback.videoLayers.allSatisfy { $0.player?.currentItem == nil && $0.player?.rate == 0 }, "Stopping a dissolve must not restart either player")
         print("DISSOLVE_SUCCESS pause and cancellation")
+
+        // A late decoded successor must not shorten the configured fade. The
+        // outgoing final frame stays visible while the full dissolve completes.
+        playback.transitionDuration = 0.3
+        playback.requiresDisplayReady = true
+        var allowIncoming = false
+        playback.frameIsReady = { layer in layer.player === playback.player || allowIncoming }
+        playback.begin(); playback.append(clip, number: 20); playback.append(clip, number: 21)
+        let lateDeadline = Date().addingTimeInterval(5)
+        while playback.player.currentTime().seconds < 0.93 && Date() < lateDeadline { pump(0.002) }
+        precondition(playback.player.currentTime().seconds >= 0.93 && !playback.isTransitioning, "Hold successor readiness until the last part of the clip")
+        allowIncoming = true
+        while !playback.isTransitioning && Date() < lateDeadline { pump(0.002) }
+        precondition(playback.isTransitioning, "Late successor must start a fade")
+        let lateStarted = CACurrentMediaTime()
+        while playback.isTransitioning && Date() < lateDeadline { pump(0.002) }
+        let lateDuration = CACurrentMediaTime() - lateStarted
+        precondition(playback.displayedNumber == 21 && lateDuration >= 0.25, "Late readiness must preserve the full fade")
+        playback.stop(); playback.frameIsReady = nil; playback.requiresDisplayReady = false
+        print("LATE_DISSOLVE_SUCCESS", lateDuration)
 
         playback.transitionDuration = 0
         items = []; finishes = 0

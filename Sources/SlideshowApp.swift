@@ -5,10 +5,22 @@ import UniformTypeIdentifiers
 
 final class SlideshowModel: ObservableObject {
     @Published var photos: [URL] = []
-    @Published var seconds = UserDefaults.standard.object(forKey: "seconds") as? Double ?? 9.0 { didSet { UserDefaults.standard.set(seconds, forKey: "seconds") } }
-    @Published var motion = UserDefaults.standard.object(forKey: "motion") as? Double ?? 1.8 { didSet { UserDefaults.standard.set(motion, forKey: "motion") } }
+    @Published var realtimeRendering = UserDefaults.standard.bool(forKey: "realtimeRendering") {
+        didSet { UserDefaults.standard.set(realtimeRendering, forKey: "realtimeRendering") }
+    }
+    @Published private(set) var usingRealtime = false
+    @Published var liveSettings = LiveRenderSettings()
+    @Published var sceneFallbacks: [URL: URL] = [:]
+    private func updateLiveSettings() {
+        liveSettings = LiveRenderSettings(seconds: seconds, strength: motion, pattern: motionStyle.rawValue,
+                                          zoomOut: effectiveExpansionZoomOutPercent, longEdge: outputLongEdge)
+        if usingRealtime { playback.sceneDuration = seconds }
+        screenSaver.updateLiveSettings(usingRealtime ? liveSettings : nil)
+    }
+    @Published var seconds = UserDefaults.standard.object(forKey: "seconds") as? Double ?? 9.0 { didSet { UserDefaults.standard.set(seconds, forKey: "seconds") ; updateLiveSettings() } }
+    @Published var motion = UserDefaults.standard.object(forKey: "motion") as? Double ?? 1.8 { didSet { UserDefaults.standard.set(motion, forKey: "motion") ; updateLiveSettings() } }
     @Published var framing = FramingMode(rawValue: UserDefaults.standard.string(forKey: "framing") ?? "fit") ?? .fit { didSet { UserDefaults.standard.set(framing.rawValue, forKey: "framing") } }
-    @Published var motionStyle = MotionStyle(rawValue: UserDefaults.standard.object(forKey: "motionStyle") as? Int ?? -1) ?? .varied { didSet { UserDefaults.standard.set(motionStyle.rawValue, forKey: "motionStyle") } }
+    @Published var motionStyle = MotionStyle(rawValue: UserDefaults.standard.object(forKey: "motionStyle") as? Int ?? -1) ?? .varied { didSet { UserDefaults.standard.set(motionStyle.rawValue, forKey: "motionStyle") ; updateLiveSettings() } }
     @Published var photoVersion = PhotoVersion(rawValue: UserDefaults.standard.string(forKey: "photoVersion") ?? "original") ?? .original { didSet { UserDefaults.standard.set(photoVersion.rawValue, forKey: "photoVersion") } }
     @Published var expandPhotoEdges = UserDefaults.standard.bool(forKey: "expandPhotoEdges") { didSet { UserDefaults.standard.set(expandPhotoEdges, forKey: "expandPhotoEdges") } }
     @Published var expansionBackend = ExpansionBackend(rawValue: UserDefaults.standard.string(forKey: "expansionBackend") ?? "appleCleanup") ?? .appleCleanup { didSet { UserDefaults.standard.set(expansionBackend.rawValue, forKey: "expansionBackend") } }
@@ -24,9 +36,9 @@ final class SlideshowModel: ObservableObject {
     var kleinRuntimeConfigured: Bool { KleinRuntime.pythonURL(override: kleinPythonPath) != nil }
     var drawThingsRuntimeConfigured: Bool { DrawThingsRuntime.pythonURL() != nil }
     @Published var expansionPercent = min(20, max(1, UserDefaults.standard.object(forKey: "expansionPercent") as? Int ?? 5)) { didSet { UserDefaults.standard.set(expansionPercent, forKey: "expansionPercent") } }
-    @Published var expansionZoomOutPercent = min(40, max(0, UserDefaults.standard.object(forKey: "expansionZoomOutPercent") as? Int ?? 0)) { didSet { UserDefaults.standard.set(expansionZoomOutPercent, forKey: "expansionZoomOutPercent") } }
+    @Published var expansionZoomOutPercent = min(40, max(0, UserDefaults.standard.object(forKey: "expansionZoomOutPercent") as? Int ?? 0)) { didSet { UserDefaults.standard.set(expansionZoomOutPercent, forKey: "expansionZoomOutPercent") ; updateLiveSettings() } }
     var effectiveExpansionZoomOutPercent: Int { min(expansionPercent * 2, expansionZoomOutPercent) }
-    @Published var outputLongEdge = UserDefaults.standard.object(forKey: "outputLongEdge") as? Int ?? 3840 { didSet { UserDefaults.standard.set(outputLongEdge, forKey: "outputLongEdge") } }
+    @Published var outputLongEdge = UserDefaults.standard.object(forKey: "outputLongEdge") as? Int ?? 3840 { didSet { UserDefaults.standard.set(outputLongEdge, forKey: "outputLongEdge") ; updateLiveSettings() } }
     @Published var crossfade = UserDefaults.standard.object(forKey: "crossfade") as? Bool ?? true { didSet { UserDefaults.standard.set(crossfade, forKey: "crossfade"); playback.transitionDuration = crossfade ? 0.8 : 0 } }
     @Published var shuffleAlbum = UserDefaults.standard.object(forKey: "shuffleAlbum") as? Bool ?? true { didSet { UserDefaults.standard.set(shuffleAlbum, forKey: "shuffleAlbum") } }
     @Published var includeVideos = UserDefaults.standard.bool(forKey: "includeVideos") { didSet { UserDefaults.standard.set(includeVideos, forKey: "includeVideos") } }
@@ -49,10 +61,12 @@ final class SlideshowModel: ObservableObject {
     @Published var cachedPhotoCount = 0
     @Published var preparedPhotoCount = 0
     let playback = ContinuousPlayback()
+    let screenSaver = ScreenSaverController()
     private let displaySleep = DisplaySleepInhibitor()
     var player: AVQueuePlayer { playback.player }
     let music = MusicPlayback()
     let library = AlbumLibrary()
+    private var sceneWindow = ScenePreparationWindow()
     private var session: RenderSession?
     private var lastAlbum: [PHAsset] = []
     private var lastAlbumDefinition: PhotoAlbum?
@@ -60,6 +74,7 @@ final class SlideshowModel: ObservableObject {
     // queue keeps running; restarting is explicit so playback never resets
     // merely because someone drags a settings slider.
     private struct RenderSettings: Equatable {
+        let realtime: Bool
         let seconds: Double
         let motion: Double
         let style: MotionStyle
@@ -77,12 +92,13 @@ final class SlideshowModel: ObservableObject {
     @Published private var renderedSettings: RenderSettings?
     private var currentRenderSettings: RenderSettings {
         let isAlbum = albumTitle != nil
-        return RenderSettings(seconds: seconds, motion: motion, style: motionStyle,
+        let live = realtimeRendering && LiveGaussianScene.isAvailable()
+        return RenderSettings(realtime: live, seconds: live ? 0 : seconds, motion: live ? 0 : motion, style: live ? .varied : motionStyle,
                               photoVersion: photoVersion, expansion: expandPhotoEdges ? expansionPercent : 0,
                               expansionBackend: expandPhotoEdges ? expansionBackend : nil,
                               kleinPythonPath: expandPhotoEdges && expansionBackend == .fluxKlein ? kleinPythonPath : nil,
-                              zoomOut: expandPhotoEdges ? effectiveExpansionZoomOutPercent : 0,
-                              outputLongEdge: outputLongEdge, shuffleAlbum: isAlbum && shuffleAlbum,
+                              zoomOut: expandPhotoEdges && !live ? effectiveExpansionZoomOutPercent : 0,
+                              outputLongEdge: live ? 0 : outputLongEdge, shuffleAlbum: isAlbum && shuffleAlbum,
                               includeVideos: isAlbum && includeVideos,
                               movieFraming: isAlbum ? nil : framing, movieFades: isAlbum ? nil : crossfade)
     }
@@ -197,6 +213,8 @@ final class SlideshowModel: ObservableObject {
     private var storageBlockages: [Int: String] = [:]
     private(set) weak var window: NSWindow?
 
+    func sceneLoaded(_ url: URL) { sceneWindow.release(url: url) }
+    func liveFallback(_ message: String) { latestFailure = message; failureCount += 1; logPlayback(message) }
     func attachWindow(_ window: NSWindow) { self.window = window }
 
     init() {
@@ -307,6 +325,7 @@ final class SlideshowModel: ObservableObject {
         if let window, window.styleMask.contains(.fullScreen) { window.toggleFullScreen(nil) }
     }
     func stop() {
+        sceneWindow.clear()
         session?.cancel(); session = nil
         busy = false; albumPlaying = false; pendingFullscreen = false
         preparationStatus = nil; preparingPhoto = nil
@@ -327,6 +346,7 @@ final class SlideshowModel: ObservableObject {
         panel.allowedContentTypes = [.image]; panel.allowsMultipleSelection = true
         if panel.runModal() == .OK {
             photos = panel.urls; albumTitle = nil; lastAlbum = []; lastAlbumDefinition = nil; albumVideoCount = 0; albumVideoIndexes = []
+            screenSaver.clearCurrentSelection()
             renderedSettings = nil
             status = "\(photos.count) photos selected"
         }
@@ -342,14 +362,27 @@ final class SlideshowModel: ObservableObject {
         latestFailure = nil; failureCount = 0
         beginPlaybackLog()
         logPlayback("Starting \(title) · \(albumCountDescription) · fades \(crossfade ? "on" : "off")")
+        usingRealtime = realtimeRendering && LiveGaussianScene.isAvailable()
+        if realtimeRendering && !usingRealtime {
+            latestFailure = "Real-time rendering is unavailable on this Mac; using prepared clips."
+            failureCount += 1
+        }
+        updateLiveSettings()
+        sceneFallbacks = [:]
         playback.begin()
+        sceneWindow = ScenePreparationWindow()
+        let window = sceneWindow
         let task = RenderSession(); session = task
+        let live = usingRealtime
         let duration = seconds, strength = motion, style = motionStyle, version = photoVersion, edge = outputLongEdge
         let expandEdges = expandPhotoEdges, extraPercent = expansionPercent, zoomOut = effectiveExpansionZoomOutPercent
         let backend = expansionBackend, pythonPath = kleinPythonPath
         // Shuffle a playback copy once per run. Cached photos may play early;
         // ContinuousPlayback tracks actual visits so they are not queued twice.
         let orderedAssets = shuffleAlbum ? assets.shuffled() : assets
+        screenSaver.beginSelection(id: "album|" + (lastAlbumDefinition?.id ?? title), title: title,
+                                   orderedIDs: orderedAssets.map { PhotoSource.library($0).cacheIdentity },
+                                   liveSettings: live ? liveSettings : nil)
         albumVideoIndexes = Set(orderedAssets.indices.filter { orderedAssets[$0].mediaType == .video })
         status = "Preparing the first item of \(assets.count)…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -382,12 +415,21 @@ final class SlideshowModel: ObservableObject {
                         self.preparationStatus = phase
                     }
                 }
+                let cachedScenes: [(URL, Int)] = live ? sources.enumerated().compactMap { index, source in
+                    guard !source.isLibraryVideo, let scene = task.cachedScene(source, version: version, root: root, expansion: expansion) else { return nil }
+                    return (scene, index)
+                } : []
+                let cachedByNumber = Dictionary(prepared.map { ($0.1, $0.0) }, uniquingKeysWith: { first, _ in first })
                 let cacheLookupSeconds = Date().timeIntervalSince(cacheLookupStarted)
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.session === task, !task.isCancelled else { return }
-                    self.cachedPhotoCount = prepared.count
-                    self.playback.addPreparedReplays(prepared)
-                    if !prepared.isEmpty {
+                    self.cachedPhotoCount = Set(prepared.map { $0.1 } + cachedScenes.map { $0.1 }).count
+                    self.sceneFallbacks = Dictionary(cachedScenes.compactMap { scene, index in cachedByNumber[index].map { (scene, $0) } }, uniquingKeysWith: { first, _ in first })
+                    self.playback.addPreparedScenes(cachedScenes)
+                    self.playback.addPreparedReplays(prepared.filter { clip in !cachedScenes.contains(where: { $0.1 == clip.1 }) })
+                    self.screenSaver.add(prepared.map { (sources[$0.1].cacheIdentity, $0.0) })
+                    self.screenSaver.addScenes(cachedScenes.map { (sources[$0.1].cacheIdentity, $0.0, cachedByNumber[$0.1]) })
+                    if !prepared.isEmpty || !cachedScenes.isEmpty {
                         self.busy = false
                         if self.pendingFullscreen && self.activeIssue == nil { self.pendingFullscreen = false; self.enterFullscreen() }
                     }
@@ -399,7 +441,10 @@ final class SlideshowModel: ObservableObject {
                 // disk to six items and simultaneous downloads/exports to three.
                 let downloads = AlbumPreparationQueue<PreparedAlbumItem>(count: sources.count, check: task.check) { index in
                     let source = sources[index]
-                    if let cached = task.cachedClip(source, seconds: duration, motion: strength, longEdge: edge, motionPattern: patterns[index], version: version, root: root, expansion: expansion) {
+                    if live, !source.isLibraryVideo, let cached = task.cachedScene(source, version: version, root: root, expansion: expansion) {
+                        return PreparedAlbumItem(.scene(cached))
+                    }
+                    if (!live || source.isLibraryVideo), let cached = task.cachedClip(source, seconds: duration, motion: strength, longEdge: edge, motionPattern: patterns[index], version: version, root: root, expansion: expansion) {
                         return PreparedAlbumItem(.movie(cached))
                     }
                     let progressLock = NSLock()
@@ -454,7 +499,7 @@ final class SlideshowModel: ObservableObject {
                     // Prepare continuously, even when playback is paused. Clips
                     // live on disk and pending playback stores only URLs; the
                     // two players preload just the current and incoming clips.
-                    // Each clip's temporary Gaussian scene is freed by task.clip.
+                    // Live mode saves reusable scenes instead of encoding movies.
                     do {
                         let source = PhotoSource.library(asset)
                         let item = try loaded.get()
@@ -467,19 +512,39 @@ final class SlideshowModel: ObservableObject {
                                 self.logPlayback("Preparing \(self.itemLabel(index).lowercased()) \(index + 1) · \(phase)")
                             }
                         }
+                        let needsLease = live && !source.isLibraryVideo && DispatchQueue.main.sync { [weak self] in
+                            self?.session === task && self?.playback.hasShown(number: index) == false
+                        }
+                        if needsLease {
+                            if window.isFull { renderProgress("Scenes ready ahead · waiting for playback") }
+                            try window.waitForCapacity(check: task.check)
+                        }
                         let clip: URL
                         // Retain the owner until the renderer finishes reading
                         // its original; releasing it removes only this scratch.
                         clip = try withExtendedLifetime(item) {
                             switch item.content {
-                            case .movie(let url): renderProgress("Ready from cache"); return url
+                            case .movie(let url), .scene(let url): renderProgress("Ready from cache"); return url
                             case .photo(let input):
+                                if live {
+                                    return try task.scene(source, version: version, root: root, tools: tools,
+                                        expansion: expansion, preparedInput: input, progress: renderProgress)
+                                }
                                 return try task.clip(source, seconds: duration, motion: strength, longEdge: edge, motionPattern: patterns[index], version: version, root: root, tools: tools, expansion: expansion, preparedInput: input, progress: renderProgress)
                             }
                         }
+                        if needsLease { try window.retain(url: clip, root: root) }
                         DispatchQueue.main.async { [weak self] in
-                            guard let self, self.session === task, !task.isCancelled else { return }
-                            self.playback.append(clip, number: index)
+                            guard let self, self.session === task, !task.isCancelled else { window.release(url: clip); return }
+                            if live && !source.isLibraryVideo {
+                                if self.playback.hasShown(number: index) { window.release(url: clip) }
+                                if let fallback = cachedByNumber[index] { self.sceneFallbacks[clip] = fallback }
+                                self.playback.appendScene(clip, number: index)
+                                self.screenSaver.addScenes([(source.cacheIdentity, clip, cachedByNumber[index])])
+                            } else {
+                                self.playback.append(clip, number: index)
+                                self.screenSaver.add([(source.cacheIdentity, clip)])
+                            }
                             self.preparedPhotoCount += 1
                             self.logPlayback("Queued \(self.itemLabel(index).lowercased()) \(index + 1) · \(self.playback.queuedCount) queued")
                             if self.preparingPhoto == index { self.preparingPhoto = nil; self.renderingPhase = nil }
@@ -532,12 +597,16 @@ final class SlideshowModel: ObservableObject {
         } else { playAlbum(title, assets: lastAlbum) }
     }
     func build() {
+        if realtimeRendering && LiveGaussianScene.isAvailable() { buildLiveFiles(); return }
+        usingRealtime = false
         guard !photos.isEmpty, !busy, !modelSetupRunning, let tools = Bundle.main.resourceURL else { return }
         stop(); busy = true; latestFailure = nil; failureCount = 0
         beginPlaybackLog()
         renderedSettings = currentRenderSettings
         let task = RenderSession(); session = task
         let selected = photos, duration = seconds, strength = motion, size = dimensions
+        screenSaver.beginSelection(id: "files|" + ClipCacheCatalog.digest(selected.map(\.path).joined(separator: "\n")),
+                                   title: "Photo Slideshow", orderedIDs: ["movie"])
         let style = motionStyle, framingMode = framing, fades = crossfade
         let expandEdges = expandPhotoEdges, extraPercent = expansionPercent, zoomOut = effectiveExpansionZoomOutPercent
         let backend = expansionBackend, pythonPath = kleinPythonPath
@@ -604,12 +673,81 @@ final class SlideshowModel: ObservableObject {
                         return index == 0 ? time : time + overlap
                     }
                     self.playMovie(output, photoStarts: starts)
+                    self.screenSaver.add([("movie", output)])
                 }
             } catch is CancellationError { }
             catch {
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.session === task else { return }
                     self.busy = false; self.session = nil; self.status = "Could not create slideshow"; self.error = StorageRecovery.userMessage(error)
+                }
+            }
+        }
+    }
+    private func buildLiveFiles() {
+        guard !photos.isEmpty, !modelSetupRunning, let tools = Bundle.main.resourceURL else { return }
+        stop(); usingRealtime = true; updateLiveSettings(); sceneFallbacks = [:]
+        movie = nil; busy = true; albumPlaying = true; albumCount = photos.count
+        preparedPhotoCount = 0; cachedPhotoCount = 0; failureCount = 0; latestFailure = nil
+        albumVideoIndexes = []; renderedSettings = currentRenderSettings
+        beginPlaybackLog(); playback.begin()
+        sceneWindow = ScenePreparationWindow()
+        let window = sceneWindow
+        let task = RenderSession(); session = task
+        let selected = photos, version = photoVersion
+        let expand = expandPhotoEdges, percent = expansionPercent, zoom = effectiveExpansionZoomOutPercent
+        let backend = expansionBackend, python = kleinPythonPath
+        let duration = seconds, strength = motion, edge = outputLongEdge, style = motionStyle
+        screenSaver.beginSelection(id: "files|" + ClipCacheCatalog.digest(selected.map(\.path).joined(separator: "\n")), title: "Photo Slideshow",
+                                   orderedIDs: selected.map { PhotoSource.file($0).cacheIdentity }, liveSettings: liveSettings)
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                let root = try Self.support()
+                task.diagnosticsDirectory = root.appendingPathComponent("Diagnostics")
+                let progress: (String) -> Void = { phase in
+                    DispatchQueue.main.async { [weak self] in
+                        guard self?.session === task else { return }
+                        self?.preparationStatus = phase
+                    }
+                }
+                try self?.ensureAppleModels(tools: tools, cleanup: expand && backend == .appleCleanup, task: task, progress: progress)
+                let expansion = try PhotoExpansionConfiguration.resolve(enabled: expand, percent: percent, zoomOutPercent: zoom,
+                    backend: backend, kleinPythonPath: python, tools: tools, cancelled: { task.isCancelled }, automaticallyInstall: true, progress: progress)
+                for (index, url) in selected.enumerated() {
+                    try task.check()
+                    let source = PhotoSource.file(url)
+                    do {
+                        if window.isFull { progress("Scenes ready ahead · waiting for playback") }
+                        try window.waitForCapacity(check: task.check)
+                        let scene = try task.scene(source, version: version, root: root, tools: tools, expansion: expansion, progress: progress)
+                        let fallback = task.cachedClip(source, seconds: duration, motion: strength, longEdge: edge,
+                            motionPattern: style.pattern(for: index, sourceIdentity: source.cacheIdentity), version: version, root: root, expansion: expansion)
+                        try window.retain(url: scene, root: root)
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self, self.session === task, !task.isCancelled else { window.release(url: scene); return }
+                            if let fallback { self.sceneFallbacks[scene] = fallback }
+                            self.playback.appendScene(scene, number: index)
+                            self.screenSaver.addScenes([(source.cacheIdentity, scene, fallback)])
+                            self.preparedPhotoCount += 1; self.busy = false
+                            self.status = "Real-time slideshow · \(self.preparedPhotoCount) of \(selected.count) prepared"
+                        }
+                    } catch is CancellationError { throw CancellationError() }
+                    catch {
+                        DispatchQueue.main.async { [weak self] in
+                            guard self?.session === task else { return }
+                            self?.failureCount += 1; self?.latestFailure = error.localizedDescription
+                        }
+                    }
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.session === task else { return }
+                    self.busy = false; self.preparationStatus = "Preparation complete"
+                    self.playback.finishPreparing()
+                }
+            } catch is CancellationError {} catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard self?.session === task else { return }
+                    self?.stop(); self?.error = error.localizedDescription
                 }
             }
         }
@@ -630,15 +768,22 @@ struct MoviePreview: NSViewRepresentable {
     let playback: ContinuousPlayback
     let fullscreen: Bool
     let fillScreen: Bool
+    var realtime = false
+    var liveSettings = LiveRenderSettings()
+    var fallbackClips: [URL: URL] = [:]
     let attachWindow: (NSWindow) -> Void
+    var sceneLoaded: (URL) -> Void = { _ in }
+    var liveFallback: (String) -> Void = { _ in }
     func makeNSView(context: Context) -> SlideshowPlayerView {
         let view = SlideshowPlayerView(frame: .zero)
-        view.onWindowChanged = attachWindow; view.bind(to: playback)
+        view.onWindowChanged = attachWindow; view.onSceneLoaded = sceneLoaded; view.onLiveFallback = liveFallback; view.bind(to: playback)
+        view.setRealtime(realtime, settings: liveSettings, fallbackClips: fallbackClips)
         view.setPresentation(fullscreen: fullscreen, fillScreen: fillScreen)
         return view
     }
     func updateNSView(_ view: SlideshowPlayerView, context: Context) {
         view.bind(to: playback)
+        view.setRealtime(realtime, settings: liveSettings, fallbackClips: fallbackClips)
         view.setPresentation(fullscreen: fullscreen, fillScreen: fillScreen)
     }
 }
@@ -687,6 +832,7 @@ struct SlideshowView: View {
                     }.controlSize(.large)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(Int(model.seconds)) seconds · \(model.motionStyle.title)")
+                        if model.usingRealtime { Text("Real-time 3D").foregroundStyle(.cyan) }
                         Text(model.expandPhotoEdges ? "Expanded edges · \(model.expansionPercent)% per edge" : "Original photo edges")
                         if model.hasPendingRenderSettings {
                             Text("Setting changes apply on the next play")
@@ -726,9 +872,13 @@ struct SlideshowView: View {
                             .help("Previous photo (←)")
                         Button { model.playback.nextPhoto() } label: { Label("Next", systemImage: "forward.end.fill") }
                             .help("Next photo (→)")
-                    }.disabled(model.player.currentItem == nil)
+                    }.disabled(!model.playback.hasCurrentItem)
                     Spacer()
                     Text("\(model.framing.title) · Esc to exit\n← Previous · → Next · Space Pause\nActual Photos Reframe model").font(.caption).foregroundStyle(.secondary)
+                    if model.usingRealtime {
+                        Text("While paused: drag or scroll to explore\nWASD moves the camera")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     Button(action: model.save) { Label("Save MP4…", systemImage: "square.and.arrow.up").frame(maxWidth: .infinity) }
                         .disabled(model.movie == nil || model.busy || model.albumPlaying)
                         .help("Saves the rendered photo movie. Music plays live and is not included in the MP4.")
@@ -736,7 +886,7 @@ struct SlideshowView: View {
                 }.frame(width: 285)
                 Divider()
             }
-            MoviePreview(playback: model.playback, fullscreen: model.fullScreen, fillScreen: model.framing == .fill, attachWindow: model.attachWindow).frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
+            MoviePreview(playback: model.playback, fullscreen: model.fullScreen, fillScreen: model.framing == .fill, realtime: model.usingRealtime, liveSettings: model.liveSettings, fallbackClips: model.sceneFallbacks, attachWindow: model.attachWindow, sceneLoaded: model.sceneLoaded, liveFallback: model.liveFallback).frame(maxWidth: .infinity, maxHeight: .infinity).background(.black)
                 .overlay(alignment: .top) {
                     if model.fullScreen, let issue = model.activeIssue {
                         Label(issue, systemImage: "exclamationmark.triangle")

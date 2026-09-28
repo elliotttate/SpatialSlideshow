@@ -4,8 +4,8 @@ cd "$(dirname "$0")"
 source Scripts/common.sh
 spatial_select_xcode
 
-version="${SPATIAL_VERSION:-0.8.1}"
-build_number="${SPATIAL_BUILD:-801}"
+version="${SPATIAL_VERSION:-0.9.0}"
+build_number="${SPATIAL_BUILD:-900}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$build_number" =~ ^[0-9]+$ ]] || { echo 'Invalid version/build number' >&2; exit 1; }
 app="${SPATIAL_APP_OUTPUT:-$PWD/build/Spatial Slideshow.app}"
 helpers="$PWD/build/Helpers"
@@ -16,7 +16,9 @@ xcrun swiftc "${swift_flags[@]}" -I Stubs -L Stubs -lPhotosGenerativeServices So
 xcrun clang -O2 -target arm64-apple-macos27.0 -fobjc-arc -fmodules -framework Foundation Sources/AppleModelSetup.m -o "$helpers/AppleModelSetup"
 xcrun swiftc "${swift_flags[@]}" Sources/PrepareExpansionPhoto.swift Sources/ColorManagedImage.swift -o "$helpers/PrepareExpansionPhoto"
 xcrun clang++ -O2 -std=c++17 -target arm64-apple-macos27.0 -ffile-prefix-map="$PWD=." -fobjc-arc -framework Foundation -framework Metal -framework CoreImage -framework CoreGraphics -framework AVFoundation -framework CoreVideo -framework CoreMedia Sources/RenderSlideshow.mm -o "$helpers/RenderSlideshow"
-xcrun swiftc "${swift_flags[@]}" Sources/SlideshowApp.swift Sources/AlbumBrowser.swift Sources/PlaybackPipeline.swift Sources/HelperProcess.swift Sources/RuntimeInstaller.swift Sources/NativeExtendRecovery.swift Sources/PhotoExpansion.swift Sources/AlbumPreparationQueue.swift Sources/StorageRecovery.swift Sources/VideoClipCache.swift Sources/ClipCacheCatalog.swift Sources/ContinuousPlayback.swift Sources/SlideshowPlayerView.swift Sources/SlideshowOptions.swift Sources/MusicPlayback.swift Sources/DisplaySleepInhibitor.swift -o "$app/Contents/MacOS/SpatialSlideshow"
+xcrun clang++ -O2 -std=c++17 -target arm64-apple-macos27.0 -fobjc-arc -c Sources/LiveGaussianRenderer.mm -o "$helpers/LiveGaussianRenderer.o"
+xcrun swiftc "${swift_flags[@]}" -import-objc-header Sources/LiveGaussianRenderer.h "$helpers/LiveGaussianRenderer.o" -lc++ Sources/ScenePreparationWindow.swift Sources/SceneCache.swift Sources/MetalPlaybackCanvas.swift Sources/LivePlaybackSurface.swift Sources/SlideshowApp.swift Sources/AlbumBrowser.swift Sources/PlaybackPipeline.swift Sources/HelperProcess.swift Sources/RuntimeInstaller.swift Sources/NativeExtendRecovery.swift Sources/PhotoExpansion.swift Sources/AlbumPreparationQueue.swift Sources/StorageRecovery.swift Sources/VideoClipCache.swift Sources/ClipCacheCatalog.swift Sources/ContinuousPlayback.swift Sources/SlideshowPlayerView.swift Sources/SlideshowOptions.swift Sources/MusicPlayback.swift Sources/DisplaySleepInhibitor.swift Sources/ScreenSaverPlaylist.swift Sources/ScreenSaverController.swift -o "$app/Contents/MacOS/SpatialSlideshow"
+bash Scripts/build_screensaver.sh "$app/Contents/Resources/Spatial Slideshow.saver"
 cp "$helpers/GenerateScene" "$helpers/RenderSlideshow" "$helpers/ExpandPhoto" "$helpers/PrepareExpansionPhoto" "$helpers/AppleModelSetup" "$app/Contents/Resources/"
 cp Sources/ExpandPhotoKlein.py Sources/KleinColorMatch.py Scripts/setup_klein.py Docs/KleinSetup.html "$app/Contents/Resources/"
 cp Scripts/SetupSupport.py Scripts/drawthings-requirements.lock Scripts/klein-requirements.lock "$app/Contents/Resources/"

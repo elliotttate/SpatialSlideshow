@@ -95,6 +95,51 @@ final class RenderSession {
         try bytes.write(to: url, options: .atomic)
         return url
     }
+    private func sceneIdentity(_ source: PhotoSource, expansion: PhotoExpansionConfiguration) -> String {
+        // Zoom-out, like duration and movement, belongs to the live camera. It
+        // must not trigger expensive image expansion / inference again.
+        var inference = expansion
+        inference.zoomOutPercent = 0
+        return inference.cacheIdentity(source.cacheIdentity)
+    }
+    func cachedScene(_ source: PhotoSource, version: PhotoVersion, root: URL, expansion: PhotoExpansionConfiguration = .disabled) -> URL? {
+        guard !source.isLibraryVideo else { return nil }
+        return SceneCache.lookup(sourceIdentity: sceneIdentity(source, expansion: expansion), version: version.rawValue, root: root)
+    }
+    func scene(_ source: PhotoSource, version: PhotoVersion, root: URL, tools: URL,
+               expansion: PhotoExpansionConfiguration = .disabled, preparedInput: URL? = nil,
+               progress: @escaping (String) -> Void = { _ in }) throws -> URL {
+        try check()
+        guard !source.isLibraryVideo else {
+            throw NSError(domain: "SpatialSlideshow", code: 4, userInfo: [NSLocalizedDescriptionKey: "Videos use normal playback rather than a generated 3D scene."])
+        }
+        let identity = sceneIdentity(source, expansion: expansion)
+        if let cached = SceneCache.lookup(sourceIdentity: identity, version: version.rawValue, root: root) {
+            progress("3D scene ready from cache")
+            return cached
+        }
+        let scratch = root.appendingPathComponent("Work/\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let original = try preparedInput ?? export(source, version: version, into: scratch, progress: progress)
+        // Save neutral camera metadata: callers can vary the zoom-out allowance
+        // immediately without mutating a shared, leased inference result.
+        var inference = expansion
+        inference.zoomOutPercent = 0
+        let input = try expandedInput(original, configuration: inference, directory: scratch.appendingPathComponent("expansion"), tools: tools, progress: progress)
+        let generated = scratch.appendingPathComponent("scene", isDirectory: true)
+        progress("Creating the Photos 3D scene for real-time playback…")
+        try run(tools.appendingPathComponent("GenerateScene"), [input.path, generated.path],
+                log: scratch.appendingPathComponent("inference.log"), stage: "Creating the Photos 3D scene", progress: progress)
+        try attachExpansionMetadata(input: input, configuration: inference, scene: generated)
+        try check()
+        guard identity == sceneIdentity(source, expansion: expansion) else {
+            throw NSError(domain: "SpatialSlideshow", code: 5, userInfo: [NSLocalizedDescriptionKey: "This photo changed while its 3D scene was being prepared. Try it again."])
+        }
+        let output = try SceneCache.store(generated, sourceIdentity: identity, version: version.rawValue, root: root, check: check)
+        progress("3D scene ready")
+        return output
+    }
     func cachedClip(_ source: PhotoSource, seconds: Double, motion: Double, longEdge: Int, motionPattern: Int, version: PhotoVersion, root: URL, expansion: PhotoExpansionConfiguration = .disabled) -> URL? {
         if source.isLibraryVideo { return cachedVideoClip(source, version: version, root: root) }
         let record = CachedClipRecord(sourceIdentity: expansion.cacheIdentity(source.cacheIdentity), version: version, seconds: seconds, motion: motion, longEdge: longEdge, motionPattern: motionPattern)

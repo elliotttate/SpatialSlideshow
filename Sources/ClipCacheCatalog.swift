@@ -56,7 +56,10 @@ final class ClipCacheCatalog {
         }
     }
     static func filename(sourceIdentity: String, version: String, seconds: Double, motion: Double, longEdge: Int, motionPattern: Int) -> String {
-        digest("\(cacheKeyPrefix)|\(version)|\(motionPattern)|\(sourceIdentity)|\(seconds)|\(motion)|\(longEdge)") + ".mp4"
+        // Preserve all <=2x clips; higher strengths now orbit instead of
+        // retracing the old path, so those movies must be rendered again.
+        let motionRevision = motion > 2 ? "|orbit-v1" : ""
+        return digest("\(cacheKeyPrefix)|\(version)|\(motionPattern)|\(sourceIdentity)|\(seconds)|\(motion)|\(longEdge)\(motionRevision)") + ".mp4"
     }
     static func record(_ record: CachedClipRecord, root: URL) throws {
         let url = cacheDirectory(root: root).appendingPathComponent(record.filename).deletingPathExtension().appendingPathExtension("json")

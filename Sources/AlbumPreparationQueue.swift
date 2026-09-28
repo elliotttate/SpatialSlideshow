@@ -71,7 +71,7 @@ final class AlbumPreparationQueue<Value>: @unchecked Sendable {
 
 /// Keeps downloaded originals alive only until their single render completes.
 final class PreparedAlbumItem {
-    enum Content { case movie(URL), photo(URL) }
+    enum Content { case movie(URL), photo(URL), scene(URL) }
     let content: Content
     private let scratch: URL?
     init(_ content: Content, scratch: URL? = nil) { self.content = content; self.scratch = scratch }

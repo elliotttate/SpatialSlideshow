@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix="spatial-video-cache-test-") as temporar
     enums = temp / "Enums.swift"
     enums.write_text("import Foundation\nimport CryptoKit\n" + options[options.index("enum MotionStyle:"):options.index("struct SlideshowOptions:")])
     executable = temp / "VideoClipCacheTest"
-    run(["xcrun", "swiftc", str(enums), str(root / "Sources/ClipCacheCatalog.swift"), str(root / "Sources/PlaybackPipeline.swift"), str(root / "Sources/HelperProcess.swift"), str(root / "Sources/RuntimeInstaller.swift"), str(root / "Sources/NativeExtendRecovery.swift"), str(root / "Sources/PhotoExpansion.swift"), str(root / "Sources/VideoClipCache.swift"), str(root / "Sources/StorageRecovery.swift"), str(root / "Tests/VideoClipCacheTest.swift"), "-o", str(executable)], env=env)
+    run(["xcrun", "swiftc", str(enums), str(root / "Sources/ClipCacheCatalog.swift"), str(root / "Sources/SceneCache.swift"), str(root / "Sources/PlaybackPipeline.swift"), str(root / "Sources/HelperProcess.swift"), str(root / "Sources/RuntimeInstaller.swift"), str(root / "Sources/NativeExtendRecovery.swift"), str(root / "Sources/PhotoExpansion.swift"), str(root / "Sources/VideoClipCache.swift"), str(root / "Sources/StorageRecovery.swift"), str(root / "Tests/VideoClipCacheTest.swift"), "-o", str(executable)], env=env)
     cache = temp / "cache"
     cache.mkdir()
     run([str(executable), str(cache), str(sdr), str(hdr)])

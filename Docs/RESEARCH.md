@@ -47,6 +47,6 @@ Completed clips are indexed by source identity/edit revision and relevant settin
 - Cleanup currently requires one unambiguous installed inpainting/refinement pair. Multiple matching revisions cause a clear failure rather than selecting an arbitrary pair.
 - Reframe's joint and FOV models are registered in separate installed assets. Discovery requires one of each predictor; ambiguous installations fail explicitly rather than depending on directory order. Assets are used in place; copying or repackaging them is not a supported setup method.
 - Required assets depend on what Photos has installed and what the Mac supports. They are not downloaded by the build script.
-- The app is a local, ad-hoc signed prerelease. Cross-machine model execution and notarized distribution have not been established by the local tests.
+- Local builds are ad-hoc signed. Published release downloads are Developer ID signed and notarized, with a stapled ticket. Local tests do not establish compatibility across all Macs or future private-framework revisions.
 
 The source-only probes under `Research/` preserve the useful interface and loader checks. Historical copied app bundles, injection experiments, compiler caches, model weights, assembly dumps, and personal review pages are intentionally outside this project.

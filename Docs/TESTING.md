@@ -9,7 +9,7 @@ Requirements: Apple Silicon macOS 27, full Xcode with a macOS 27 SDK, Python 3, 
 | `storage` | Full-storage and offline detection, retries, cancellation, and status clearing |
 | `helper-process` | Live output/progress, bounded timeout, termination of unresponsive children, cancellation, and retained failure logs |
 | `preparation` | Slow-first bypass, eventual inclusion, bounded prefetch, failure, and cleanup |
-| `motion` | Camera compatibility, expansion compensation, and zoom-out bounds |
+| `motion` | Camera compatibility, complete high-strength orbits, expansion compensation, and zoom-out bounds |
 | `cache` | Exact photo-cache identity and stable movement across process launches |
 | `persistent-cache` | Replay variants, revision/expansion isolation, and process restart |
 | `video-cache` | Synthetic SDR/HDR exports, orientation, audio, edits, cancellation, and restart |
@@ -21,11 +21,16 @@ Requirements: Apple Silicon macOS 27, full Xcode with a macOS 27 SDK, Python 3, 
 | `display-sleep` | Playback assertion lifecycle without changing system settings |
 | `native-extend-recovery` | Simulated cloud errors, rate-limit cooldowns, cancellation, and authorization failures |
 | `apple-model-setup` | Missing, incomplete, unique, and ambiguous installed Apple model sets using synthetic directories |
+| `screen-saver` | Playlist updates, persistence, source selection, missing media, live/clip fallback reconciliation, silent playback, and composited frame retention |
+| `scene-cache` | Scene validation, atomic storage, corruption recovery, eviction, leases, cancellation, and cross-process reuse |
+| `live-transport` | Scene readiness, pause, timing, transitions, navigation, and mixed-media fallback |
+| `live-renderer` | GPU motion and fades, black-frame detection, paused frame reuse, mouse/WASD camera input, smooth resume, navigation, and clip fallbacks |
+| `scene-window` | Bounded scene preparation, protected ahead-of-playback files, capacity wake-up, and cancellation |
 | `runtime-installer` | Download integrity, environment isolation, installation locks, cancellation, and reuse without model downloads |
 
 Run a subset with repeated `--only NAME` arguments. `--core` runs the first six checks. Reports are in `build/tests/reports/`; compiler/runtime logs are in `build/tests/logs/`. These outputs may include local paths and must not be committed. Synthetic fixture provenance is recorded in `build/tests/fixtures/provenance.json`.
 
-The full native suite contains 16 checks. Run all Python suites with a Python environment containing NumPy and Pillow using `python -m unittest discover -s Tests -p 'test_*.py'`. This includes `test_runtime_setup.py`, which uses small local HTTP fixtures to test resumed downloads, integrity checks, registration preservation, process groups, and package repair without downloading model weights.
+The full native suite contains 21 checks. Run all Python suites in the managed Draw Things Python 3.12 environment (or a Python 3.12 environment with `Scripts/drawthings-requirements.lock` installed) using `python -m unittest discover -s Tests -p 'test_*.py'`. NumPy and Pillow alone are sufficient for the Klein image tests, but the complete suite also requires the pinned Draw Things client. This includes `test_runtime_setup.py`, which uses small local HTTP fixtures to test resumed downloads, integrity checks, registration preservation, process groups, and package repair without downloading model weights.
 
 `python3 Tests/run_runtime_installer_test.py --bootstrap-integration` explicitly downloads the pinned 25 MB portable Python archive into a temporary directory with spaces and verifies TLS/imports, reuse, invalid receipt repair, and broken interpreter repair. Repairs download another copy. This needs network access but does not install model weights or access the Photos library. See [the first-launch audit](FIRST_LAUNCH_AUDIT.md) for the limits of isolated-runtime tests on a development Mac.
 

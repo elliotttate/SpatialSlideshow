@@ -53,6 +53,8 @@ struct ClipCacheTest {
         check(url(pattern: firstPattern) == url(pattern: shuffledPattern), "Shuffling an album resolves the same photo to the same cached clip path")
         check(cached() == nil && !manager.fileExists(atPath: output.deletingLastPathComponent().path), "Cache lookup does not create files or directories")
         check(Set([output, url(seconds: 9), url(motion: 1.5), url(longEdge: 3840), url(pattern: 3), url(version: .original)]).count == 6, "Duration, strength, resolution, movement and photo version each invalidate the cache")
+        check(Set([url(motion: 1.8), url(motion: 2), url(motion: 2.05), url(motion: 3), url(motion: 4)]).count == 5,
+              "Higher strengths render distinct clips without replacing existing motion caches")
         try manager.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data().write(to: output)
         check(cached() == nil, "Empty cache files are rejected")
@@ -60,6 +62,10 @@ struct ClipCacheTest {
         try manager.copyItem(at: URL(fileURLWithPath: CommandLine.arguments[1]), to: output)
         check(cached() == output, "A completed cached clip is reusable")
         var progress: [String] = []
+        let oldHighMotionKey = "color-managed-v5|current|2|\(source.cacheIdentity)|6.0|4.0|1920"
+        let oldHighMotionName = ClipCacheCatalog.digest(oldHighMotionKey) + ".mp4"
+        check(url(motion: 4).lastPathComponent != oldHighMotionName,
+              "High-strength orbit clips do not reuse the old reversing-motion cache")
         let hit = try session.clip(source, seconds: 6, motion: 1, longEdge: 1920, motionPattern: 2, version: .current, root: root, tools: root.appendingPathComponent("nonexistent-model-and-renderer"), progress: { progress.append($0) })
         check(hit == output && progress == ["Ready from cache"], "Cache hit returns without model inference or rendering")
         check(!manager.fileExists(atPath: root.appendingPathComponent("Work").path), "Cache hit does not create scratch work or export an image")

@@ -41,6 +41,9 @@ ditto "$source_app" "$app"
 for helper in GenerateScene RenderSlideshow ExpandPhoto PrepareExpansionPhoto AppleModelSetup; do
     codesign --force --options runtime --timestamp --sign "$sign_id" "$app/Contents/Resources/$helper"
 done
+if [[ -d "$app/Contents/Resources/Spatial Slideshow.saver" ]]; then
+    codesign --force --options runtime --timestamp --sign "$sign_id" "$app/Contents/Resources/Spatial Slideshow.saver"
+fi
 codesign --force --options runtime --timestamp --sign "$sign_id" \
     --entitlements SpatialSlideshow.entitlements "$app"
 codesign --verify --deep --strict "$app"

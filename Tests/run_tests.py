@@ -9,7 +9,7 @@ import time
 from test_support import ROOT, TEST_ROOT, REPORTS, developer_environment, ensure_fixtures
 
 ALL = ["storage", "preparation", "motion", "cache", "persistent-cache", "video-cache",
-       "playback", "displayed-playback", "navigation", "fullscreen", "music", "display-sleep", "helper-process", "native-extend-recovery", "apple-model-setup", "runtime-installer"]
+       "playback", "displayed-playback", "navigation", "fullscreen", "music", "display-sleep", "helper-process", "native-extend-recovery", "apple-model-setup", "runtime-installer", "screen-saver", "scene-cache", "live-transport", "live-renderer", "scene-window"]
 CORE = ALL[:6]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--core", action="store_true", help="Skip WindowServer, audio-playback and power-assertion checks")
@@ -34,13 +34,17 @@ def commands(name):
     if name == "apple-model-setup":
         binary = str(executables / "AppleModelSetupTest")
         return [["xcrun", "clang", "-fobjc-arc", "-fmodules", "-framework", "Foundation", str(ROOT / "Tests/AppleModelSetupTest.m"), "-o", binary], [binary]]
-    if name in ("cache", "persistent-cache", "video-cache"):
-        script = {"cache": "run_clip_cache_test.py", "persistent-cache": "run_persistent_replay_cache_test.py", "video-cache": "run_video_clip_cache_test.py"}[name]
+    if name in ("cache", "persistent-cache", "video-cache", "scene-cache"):
+        script = {"cache": "run_clip_cache_test.py", "persistent-cache": "run_persistent_replay_cache_test.py", "video-cache": "run_video_clip_cache_test.py", "scene-cache": "run_scene_cache_test.py"}[name]
         return [[sys.executable, str(ROOT / "Tests" / script)]]
     if name == "motion":
         binary = str(executables / "ExpansionMotionTest")
         return [["xcrun", "clang++", "-O2", "-std=c++17", str(ROOT / "Tests/ExpansionMotionTest.cpp"), "-o", binary], [binary]]
     tests = {
+        "scene-window": ("ScenePreparationWindowTest", ["SceneCache", "ScenePreparationWindow"], []),
+        "live-renderer": ("LivePlaybackSurfaceTest", ["LivePlaybackSurface", "ContinuousPlayback", "SlideshowPlayerView"], [str(fixtures / "playback-short.mp4"), str(fixtures / "playback-second.mp4")]),
+        "live-transport": ("LiveTransportTest", ["ContinuousPlayback"], [str(fixtures / "playback-short.mp4")]),
+        "screen-saver": ("ScreenSaverTest", ["ScreenSaverPlaylist", "ScreenSaverController", "SpatialScreenSaverView", "ContinuousPlayback"], [str(fixtures / "playback-screen-saver.mp4")]),
         "helper-process": ("HelperProcessTest", ["HelperProcess"], []),
         "native-extend-recovery": ("NativeExtendRecoveryTest", ["NativeExtendRecovery"], []),
         "storage": ("StorageRecoveryTest", ["StorageRecovery", "AlbumPreparationQueue"], []),
@@ -54,6 +58,13 @@ def commands(name):
     }
     test, sources, arguments = tests[name]
     compile_commands, binary = swift(test, [f"Sources/{source}.swift" for source in sources] + [f"Tests/{test}.swift"])
+    if any(source in sources for source in ["SlideshowPlayerView", "SpatialScreenSaverView", "LivePlaybackSurface"]):
+        object_file = str(executables / "LiveGaussianRenderer.o")
+        compile_commands.insert(0, ["xcrun", "clang++", "-O2", "-std=c++17", "-target", "arm64-apple-macos27.0", "-fobjc-arc", "-c", "Sources/LiveGaussianRenderer.mm", "-o", object_file])
+        for source in ["SceneCache", "MetalPlaybackCanvas", "LivePlaybackSurface", "ScreenSaverPlaylist"]:
+            if source not in sources:
+                compile_commands[1].append(str(ROOT / f"Sources/{source}.swift"))
+        compile_commands[1] += ["-import-objc-header", str(ROOT / "Sources/LiveGaussianRenderer.h"), object_file, "-lc++"]
     return compile_commands + [[binary] + arguments]
 
 results = []
