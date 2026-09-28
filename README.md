@@ -4,15 +4,15 @@
 
 A native Mac slideshow that turns photos into moving 3D scenes using the **actual Apple Photos Reframe models** and Apple's Gaussian renderer. Browse a Photos album, press Play, and let it prepare the remaining items while the slideshow runs.
 
-**0.8.0 is an experimental prerelease for Apple Silicon and macOS 27.** The private frameworks and models are only verified on the development machine's macOS 27 installation. Other OS builds or hardware may behave differently. See the [release notes](Docs/RELEASE_NOTES_0.8.0.md) for changes since 0.7.0.
+**0.8.1 is an experimental prerelease for Apple Silicon and macOS 27.** The private frameworks and models are only verified on the development machine's macOS 27 installation. Other OS builds or hardware may behave differently. See the [release notes](Docs/RELEASE_NOTES_0.8.1.md) for the first-run setup improvements.
 
 ## Requirements
 
 - Apple Silicon Mac running macOS 27.
-- Photos spatial/reframing model assets already installed on that Mac. Use the corresponding feature in Photos first so macOS can obtain its supported models.
-- For optional Apple edge expansion, the installed Photos Clean Up models. Open Clean Up in Photos first if the app reports they are unavailable. The alternative **FLUX.2 Klein · MLX** option requires its separate local runtime and weights; see [setup instructions](Docs/KleinSetup.html).
-- **FLUX · Draw Things** is another optional local expansion engine using four-step FLUX.2 Klein 4B. Its separate installation is described in [Draw Things setup](Docs/DrawThingsSetup.html).
-- **Apple Photos Extend** is an opt-in [research backend](Docs/APPLE_EXTEND.md), currently restricted to Trip. It requires original Photos open, Xcode tools, and the user-configured temporary SIP-disabled setup; it uses Apple's online Extend service.
+- Photos spatial/reframing model assets available for that Mac. The app checks them before processing and requests missing assets through macOS. If Apple requires setup in Photos, the app explains how to enable the feature and offers **Open Photos**. A third-party app cannot guarantee Apple's download will complete; see the [first-launch audit](Docs/FIRST_LAUNCH_AUDIT.md).
+- For optional Apple edge expansion, Photos Clean Up assets. The same readiness check requests them and explains how to finish setup in Photos if needed.
+- Optional **FLUX.2 Klein · MLX** and **FLUX · Draw Things** models download automatically on first use. The app installs its own verified Python runtime and dependencies; **Python, Homebrew, Xcode, and the Draw Things desktop app are not required**. Allow approximately **16 GB of free space** for a fresh local-model setup. See [MLX details](Docs/KleinSetup.html) or [Draw Things details](Docs/DrawThingsSetup.html).
+- **Apple Photos Extend** is hidden under **Experimental research tools** on new installations. This [research backend](Docs/APPLE_EXTEND.md) is restricted to Trip and requires original Photos open, Xcode tools, and the separately configured temporary SIP-disabled setup; it uses Apple's online Extend service. Normal slideshow setup does not require these changes.
 - Photos library permission when browsing albums, network access for photos kept only in iCloud, and free disk space for originals and prepared clips.
 
 The app loads installed Apple assets in place and bundles no model weights. Normal backends process images locally. The optional native Extend research backend runs a one-shot expression inside original Photos and uses Apple's online service. No backend changes system files, OS security policy, entitlements, or original library photos.
@@ -23,6 +23,8 @@ The app loads installed Apple assets in place and bundles no model weights. Norm
 2. Choose **Browse Photo Albums**, select an album, and press **Play Album**. Or choose local image files and use **Build Slideshow**.
 3. Open **Settings…** in the sidebar, or press **⌘,**, to control playback, camera movement, edge expansion, album contents, quality, and music.
 
+**Settings → Models & Downloads → Download / Check Models** can prepare the required Apple models and the currently enabled expansion engine before playback. Setup shows progress, supports cancellation and retry, and keeps completed downloads for reuse. Models and runtimes are installed in your Application Support folder, outside the signed app. Existing custom Python environments are left untouched; choose **Reset to Automatic** to use the managed MLX runtime.
+
 The image controls provide Previous, Play/Pause, Next, and one fullscreen toggle. **← / →** skip whole items, **Space** pauses, and **Esc** exits fullscreen. The complete control bar hides after idle. Playback prevents display sleep; pause, stop, or completion releases that request.
 
 The app starts with previously prepared album items while new downloads begin. It prepares photos while playing or paused, with up to three original downloads and six buffered inputs. Every available photo that has not been shown in the current slideshow takes priority over repeats, including photos from previous sessions' caches. A cached photo is not shown again just because its new render finishes. If all ready photos have been seen while preparation continues, playback cycles through them in random rounds without immediate duplicates when alternatives exist. New photos interrupt those repeats; previous/next navigation still follows viewing history. A storage shortage or lost internet connection displays a warning and retries instead of silently discarding the affected photo. Long preparation steps show elapsed time; Apple model helpers are stopped after three minutes if they do not finish. MLX outpainting has a separate 30-minute limit; Draw Things has a six-minute outer limit. Playback readiness warnings and the latest item error are shown in the app, with a **Show Diagnostics** button. Stop cancels preparation.
@@ -31,7 +33,7 @@ The app starts with previously prepared album items while new downloads begin. I
 
 - **Playback:** fill the screen or fit with black bars; optional fades between photos; video sound.
 - **Camera movement:** time per photo, motion strength, and varied or fixed left/right, push-in, pull-back, diagonal, or vertical paths.
-- **Photo edge expansion:** choose **Apple Fast Clean Up**, **FLUX.2 Klein · MLX**, or **FLUX · Draw Things** to add 1–20% on each edge. Apple is the faster default. The two FLUX engines run locally with separately installed models; Draw Things uses four-step FLUX.2 Klein 4B. The original composition stays close in view; extra surroundings provide space for movement. Larger extensions can soften or invent edge details. All three options retain the original full-resolution center outside a narrow blended seam.
+- **Photo edge expansion:** choose **Apple Fast Clean Up**, **FLUX.2 Klein · MLX**, or **FLUX · Draw Things** to add 1–20% on each edge. Apple is the faster default. The two FLUX engines run locally with automatically installed models; Draw Things uses four-step FLUX.2 Klein 4B. The original composition stays close in view; extra surroundings provide space for movement. Larger extensions can soften or invent edge details. All three options retain the original full-resolution center outside a narrow blended seam.
 - **Maximum zoom out:** an optional expansion override. Zero keeps the original framing behavior. Raising it lets the camera reveal more generated surroundings, up to twice the per-edge expansion percentage (40% with 20% expansion). The actual motion also follows the strength setting.
 - **Apple Photos Extend research preview:** an additional expansion choice for the temporary research setup above. Preserves the original photo, saves expanded stills for reuse, and follows the same expansion and zoom controls. New installations retain the existing expansion-off default.
 - **Album:** shuffle and optionally include full-length videos. Live Photos use their still image. Video timing is independent of photo duration.
@@ -77,7 +79,7 @@ The build uses `DEVELOPER_DIR` when supplied. Otherwise it tries the selected fu
 DEVELOPER_DIR="/path/to/Xcode.app/Contents/Developer" ./build_slideshow.sh
 ```
 
-Local builds are ad-hoc signed and not notarized. The published **0.8.0 download is Developer ID signed, notarized by Apple, and includes a stapled ticket**. Compatibility with future private framework revisions is not guaranteed.
+Local builds are ad-hoc signed and not notarized. Published release downloads are Developer ID signed, notarized by Apple, and include a stapled ticket. Compatibility with future private framework revisions is not guaranteed.
 
 ## Tests
 
@@ -105,7 +107,7 @@ This optional test runs the actual expansion → Reframe → render pipeline, te
 ./Scripts/package_release.sh
 ```
 
-This creates `dist/SpatialSlideshow-0.8.0-macOS-arm64.zip` and its SHA-256 file. It does not tag, publish, or upload anything. Set `SPATIAL_APP_OUTPUT` to build a separate release bundle without replacing a running development app. The archive contains the app, icon, and helper executables; Apple frameworks and models remain system dependencies.
+This creates `dist/SpatialSlideshow-0.8.1-macOS-arm64.zip` and its SHA-256 file. It does not tag, publish, or upload anything. Set `SPATIAL_APP_OUTPUT` to build a separate release bundle without replacing a running development app. The archive contains the app, icon, and helper executables; Apple frameworks and models remain system dependencies.
 
 For distribution, sign and notarize a copy of the built app using your Developer ID Application certificate and an existing `notarytool` Keychain profile:
 
@@ -115,6 +117,6 @@ SPATIAL_NOTARY_PROFILE='YourKeychainProfile' \
 ./Scripts/notarize_release.sh "$PWD/build/Spatial Slideshow.app"
 ```
 
-This signs embedded helpers before the app, enables Hardened Runtime with secure timestamps, submits to Apple, staples and validates the accepted ticket, and runs Gatekeeper assessment and Apple's pre-distribution checks. The final ZIP and checksum are written to `dist/notarized/`; an optional second argument chooses another output directory. The source app remains untouched. Credentials stay in Keychain, and submission logs remain in ignored `build/notarization/`. Publish this final archive, which contains the stapled app, instead of the submission ZIP. The script never uploads to GitHub.
+This signs embedded helpers before the app, enables Hardened Runtime with secure timestamps, applies and verifies the main app's Photos Library entitlement, submits to Apple, staples and validates the accepted ticket, and runs Gatekeeper assessment and Apple's pre-distribution checks. The final ZIP and checksum are written to `dist/notarized/`; an optional second argument chooses another output directory. The source app remains untouched. Credentials stay in Keychain, and submission logs remain in ignored `build/notarization/`. Publish this final archive, which contains the stapled app, instead of the submission ZIP. The script never uploads to GitHub.
 
 [Architecture and research notes](Docs/RESEARCH.md) describe the working model routes and their limits. [Research probes](Research/README.md) preserve source-only diagnostics; no Apple binaries, disassembly, model weights, or decompiled implementations are included.

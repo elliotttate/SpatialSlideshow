@@ -87,7 +87,8 @@ struct PhotoExpansionConfiguration {
 
     static func resolve(enabled: Bool, percent: Int, zoomOutPercent: Int = 0,
                         backend: ExpansionBackend = .appleCleanup, kleinPythonPath: String = "",
-                        tools: URL, albumTitle: String? = nil, cancelled: () -> Bool = { false }) throws -> Self {
+                        tools: URL, albumTitle: String? = nil, cancelled: () -> Bool = { false },
+                        automaticallyInstall: Bool = false, progress: (String) -> Void = { _ in }) throws -> Self {
         guard enabled else { return .disabled }
         if backend == .applePhotosExtend {
             guard albumTitle == "Trip" else {
@@ -108,8 +109,11 @@ struct PhotoExpansionConfiguration {
         }
         if backend != .appleCleanup {
             let drawThings = backend == .drawThingsFlux
-            guard let python = drawThings ? DrawThingsRuntime.pythonURL() : KleinRuntime.pythonURL(override: kleinPythonPath) else {
-                throw failure("\(backend.title) is not set up on this Mac. Open Settings → Photo Edge Expansion → Setup Help.")
+            let availablePython = automaticallyInstall
+                ? try RuntimeInstaller.ensure(backend: backend, tools: tools, override: kleinPythonPath, cancelled: cancelled, progress: progress)
+                : (drawThings ? DrawThingsRuntime.pythonURL() : KleinRuntime.pythonURL(override: kleinPythonPath))
+            guard let python = availablePython else {
+                throw failure("\(backend.title) needs its local models. Start playback or choose Download Models in Settings to install them automatically.")
             }
             let script = tools.appendingPathComponent(drawThings ? "ExpandPhotoDrawThings.py" : "ExpandPhotoKlein.py")
             let prepare = tools.appendingPathComponent("PrepareExpansionPhoto")

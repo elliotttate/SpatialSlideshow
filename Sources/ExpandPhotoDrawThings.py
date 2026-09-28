@@ -18,6 +18,7 @@ import platform
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -247,7 +248,46 @@ def port_open(port):
         return False
 
 
+def available_loopback_port():
+    """Ask the OS for an unused local port; never displace another service."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            return listener.getsockname()[1]
+    except OSError as error:
+        raise RuntimeError(f"Could not reserve a local Draw Things port: {error}. Try playback again.") from None
+
+
+def persist_runtime_port(config, port):
+    """Caller holds server-operation.lock. Do not overwrite changed registrations.
+
+    A staged setup file, symlink, foreign-owned file, or registration changed
+    since it was loaded can still use the selected port for this request, but
+    must not be rewritten by playback.
+    """
+    path = Path(config["config_path"])
+    try:
+        info = path.lstat()
+        if (path.name != "runtime.json" or path.parent != Path(config["runtime_root"])
+                or not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()):
+            return False
+        registration = json.loads(path.read_text())
+        loaded = {key: value for key, value in config.items()
+                  if key not in ("config_path", "runtime_root", "model_metadata_sha256")}
+        if registration != loaded:
+            return False
+        # Avoid replacing a registration which changed while it was read.
+        current = path.lstat()
+        if (current.st_ino, current.st_mtime_ns, current.st_size) != (info.st_ino, info.st_mtime_ns, info.st_size):
+            return False
+        common.write_json(path, {**registration, "port": port})
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def ensure_server(config):
+    """Start/reuse our server while the caller holds server-operation.lock."""
     root = Path(config["runtime_root"])
     root.mkdir(parents=True, exist_ok=True)
     state_path = root / "server-state.json"
@@ -260,7 +300,12 @@ def ensure_server(config):
             return state
         stop_owned_server(config, state)
     if port_open(config["port"]):
-        raise RuntimeError(f"Local port {config['port']} is occupied by another service. Quit the other Draw Things server or choose another port in {config['config_path']}.")
+        port = available_loopback_port()
+        persist_runtime_port(config, port)
+        config["port"] = port
+        # Transport changes require a new server, not a new model/render key.
+        identity = common.digest({key: config.get(key) for key in ("server_binary", "models_directory", "port", "release", "model_metadata_sha256")})
+        progress("Using another available local port for Draw Things")
     token = uuid.uuid4().hex
     cache = root / "server-cache"
     cache.mkdir(exist_ok=True)
@@ -281,6 +326,7 @@ def ensure_server(config):
                                      start_new_session=True, close_fds=True)
         state = {"pid": child.pid, "process": process_snapshot(child.pid), "launch_token": token,
                  "binary": config["server_binary"], "server_identity": identity,
+                 "port": config["port"],
                  "last_used_at": time.time(), "log": str(log_path)}
         deadline = time.monotonic() + 30
         if not owns_server(state):

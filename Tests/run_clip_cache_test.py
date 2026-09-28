@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix="spatial-cache-test-") as temporary:
     enums = temporary / "Enums.swift"
     enums.write_text(declarations)
     executable = temporary / "ClipCacheTest"
-    subprocess.run(["xcrun", "swiftc", str(enums), str(root / "Sources/ClipCacheCatalog.swift"), str(root / "Sources/PlaybackPipeline.swift"), str(root / "Sources/HelperProcess.swift"), str(root / "Sources/NativeExtendRecovery.swift"), str(root / "Sources/PhotoExpansion.swift"), str(root / "Sources/VideoClipCache.swift"), str(root / "Sources/StorageRecovery.swift"), str(root / "Tests/ClipCacheTest.swift"), "-o", str(executable)], env=env, check=True)
+    subprocess.run(["xcrun", "swiftc", str(enums), str(root / "Sources/ClipCacheCatalog.swift"), str(root / "Sources/PlaybackPipeline.swift"), str(root / "Sources/HelperProcess.swift"), str(root / "Sources/RuntimeInstaller.swift"), str(root / "Sources/NativeExtendRecovery.swift"), str(root / "Sources/PhotoExpansion.swift"), str(root / "Sources/VideoClipCache.swift"), str(root / "Sources/StorageRecovery.swift"), str(root / "Tests/ClipCacheTest.swift"), "-o", str(executable)], env=env, check=True)
     evidence = REPORTS / "clip-cache-test.json"
     first = temporary / "first-run.json"
     for output in (first, evidence):

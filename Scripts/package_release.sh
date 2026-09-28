@@ -2,7 +2,7 @@
 # Produces local artifacts only. Does not create a tag or publish a release.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-export SPATIAL_VERSION="${SPATIAL_VERSION:-0.8.0}"
+export SPATIAL_VERSION="${SPATIAL_VERSION:-0.8.1}"
 version="$SPATIAL_VERSION"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid version' >&2; exit 1; }
 export SPATIAL_APP_OUTPUT="${SPATIAL_APP_OUTPUT:-$PWD/build/Spatial Slideshow.app}"

@@ -8,7 +8,7 @@ enum HelperProcess {
                     environment: [String: String], stage: String,
                     timeout: TimeInterval = 180, heartbeat: TimeInterval = 5, slowAfter: TimeInterval = 30,
                     diagnostics: URL? = nil, cancelled: () -> Bool,
-                    progress: (String) -> Void) throws {
+                    progress: (String) -> Void, liveOutputPrefixes: [String] = [], terminateProcessGroup: Bool = false) throws {
         if cancelled() { throw CancellationError() }
         try Data().write(to: log)
         let output = try FileHandle(forWritingTo: log)
@@ -27,10 +27,15 @@ enum HelperProcess {
         }
         func stopChild() {
             guard task.isRunning else { return }
-            task.terminate()
+            // Managed installers put themselves and pip/download children in
+            // their own process group. Never signal the app's process group.
+            let group = terminateProcessGroup && getpgid(task.processIdentifier) == task.processIdentifier
+                ? task.processIdentifier : nil
+            if let group { kill(-group, SIGTERM) } else { task.terminate() }
             let deadline = ProcessInfo.processInfo.systemUptime + 1
             while task.isRunning && ProcessInfo.processInfo.systemUptime < deadline { Thread.sleep(forTimeInterval: 0.02) }
-            if task.isRunning { kill(task.processIdentifier, SIGKILL) }
+            if let group { kill(-group, SIGKILL) }
+            else if task.isRunning { kill(task.processIdentifier, SIGKILL) }
             task.waitUntilExit()
         }
         var timedOut = false
@@ -41,7 +46,21 @@ enum HelperProcess {
             if now >= nextUpdate {
                 let elapsed = Int(now - start)
                 let slow = Double(elapsed) >= slowAfter ? " · Taking longer than usual; timeout at \(Int(timeout))s" : ""
-                progress("\(stage) · \(elapsed)s elapsed\(slow)")
+                var detail: String?
+                if !liveOutputPrefixes.isEmpty, let reader = try? FileHandle(forReadingFrom: log) {
+                    defer { try? reader.close() }
+                    let size = (try? reader.seekToEnd()) ?? 0
+                    try? reader.seek(toOffset: size > 8192 ? size - 8192 : 0)
+                    if let bytes = try? reader.readToEnd(), let text = String(data: bytes, encoding: .utf8) {
+                        let line = text.components(separatedBy: .newlines).last { line in
+                            liveOutputPrefixes.contains { line.hasPrefix($0) }
+                        }
+                        if let line, let prefix = liveOutputPrefixes.first(where: { line.hasPrefix($0) }) {
+                            detail = String(line.dropFirst(prefix.count))
+                        }
+                    }
+                }
+                progress("\(detail ?? stage) · \(elapsed)s elapsed\(slow)")
                 nextUpdate = now + heartbeat
             }
             Thread.sleep(forTimeInterval: 0.1)

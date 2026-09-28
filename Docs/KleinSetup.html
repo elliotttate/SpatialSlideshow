@@ -7,12 +7,13 @@
 <h1>Outpainting with FLUX.2 Klein</h1>
 <p>Use <strong>Settings → Photo Edge Expansion → FLUX.2 Klein</strong> to generate extra surroundings before Apple Photos Reframe animates the photo. Both models run on your Mac. Photos are not uploaded to a model service.</p>
 <p>Allow several minutes per new photo. Expanded stills are cached across launches, so changing motion or zoom does not require another outpainting pass. Start with a small amount of extra area. Generated scenery can contain visible seams or invented details.</p>
-<h2>Already installed?</h2>
-<p>If Settings shows <strong>Local runtime configured</strong>, enable edge expansion and select FLUX.2 Klein. The app verifies the required packages and model files when you start playback.</p>
-<p>To use another existing installation, click <strong>Choose Runtime…</strong> and select the Python environment folder containing <code>bin/python</code> and <code>mlx-gen</code>. The required model snapshots below must already be downloaded.</p>
 <h2>First-time setup</h2>
-<p>Setup requires an Apple Silicon Mac, Python 3.12, and approximately 10 GB of model downloads plus room for the Python environment and generated images. Downloads happen only during this explicit setup; playback uses the installed models offline.</p>
-<p>In Terminal, run the installer bundled with the app. Replace the app location with where you saved it:</p>
+<p>Enable <strong>Expand photo edges</strong>, select <strong>FLUX.2 Klein · MLX</strong>, and press Play. The app installs a verified Python runtime, packages, and pinned models automatically. You can also choose <strong>Settings → Models &amp; Downloads → Download / Check Models</strong> before playback. No Python, Homebrew, or developer tools need to be installed.</p>
+<p>Allow approximately 16 GB of free space, including roughly 10 GB of model downloads, the Python environment, and processing space. Setup shows progress and supports cancellation and retry. After setup, model inference runs offline.</p>
+<h2>Existing and custom installations</h2>
+<p>The app checks an existing registered runtime before downloading anything. To supply your own installation, expand <strong>Advanced runtime settings</strong>, click <strong>Choose…</strong>, and select the environment containing <code>bin/python</code> and <code>mlx-gen</code>. The required model snapshots below must already be downloaded. Custom environments are not modified. Choose <strong>Reset to Automatic</strong> to return to managed setup.</p>
+<h2>Advanced Terminal setup</h2>
+<p>If you prefer to supply your own Python 3.12, run the bundled installer. Replace the app location with where you saved it:</p>
 <pre><code>python3.12 "/path/to/Spatial Slideshow.app/Contents/Resources/setup_klein.py"</code></pre>
 <p>Or from a source checkout:</p>
 <pre><code>python3.12 Scripts/setup_klein.py</code></pre>

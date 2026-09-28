@@ -4,7 +4,7 @@
 #include "ExpansionMotion.h"
 
 static void require(BOOL ok, NSError *error, NSString *operation) {
-    if (!ok) { fprintf(stderr, "%s: %s\n", operation.UTF8String, error.description.UTF8String ?: "failed"); exit(1); }
+    if (!ok) { fprintf(stderr, "ERROR: %s: %s\n", operation.UTF8String, error.description.UTF8String ?: "failed"); exit(1); }
 }
 
 static id<MTLBuffer> readBuffer(id<MTLDevice> device, NSString *root, NSString *name, NSUInteger expected = 0) {

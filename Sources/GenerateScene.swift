@@ -11,21 +11,7 @@ final class Cancellation: Cancellable {
 // Use the installed, registered asset in place. Restore-image copies failed
 // to load on the tested Mac; these registered paths succeed.
 func installedModels() throws -> (joint: URL, fov: URL) {
- let root = URL(fileURLWithPath: "/System/Library/AssetsV2/com_apple_MobileAsset_UAF_Photos_SpatialPhotosRelive/purpose_auto")
- var joint: [URL] = [], fov: [URL] = []
- for asset in try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) where asset.pathExtension == "asset" {
-  let contents = (try? FileManager.default.contentsOfDirectory(at: asset.appendingPathComponent(".AssetData"), includingPropertiesForKeys: nil)) ?? []
-  let models = contents.filter { $0.pathExtension == "mlmodelc" }
-  // macOS registers these predictors as separate assets. Require a unique
-  // installed model of each kind instead of depending on directory order.
-  joint += models.filter { $0.lastPathComponent.contains("joint_predictor") }
-  fov += models.filter { $0.lastPathComponent.contains("fov_") }
- }
- guard joint.count == 1, fov.count == 1 else {
-  let message = joint.isEmpty || fov.isEmpty ? "Photos Spatial Reframing assets are not installed. Open a spatial photo in Photos to download them." : "Multiple Photos Spatial Reframing model versions are installed. No unambiguous model pair is available."
-  throw NSError(domain: "Slideshow", code: 2, userInfo: [NSLocalizedDescriptionKey: message])
- }
- return (joint[0], fov[0])
+ try AppleModelLocations.reframe()
 }
 
 @main

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import struct
 import sys
 import tempfile
@@ -218,13 +219,54 @@ class DrawThingsTests(unittest.TestCase):
                 stop.assert_called_once()
                 self.assertFalse((self.root / "generated.png").exists())
 
-    def test_port_conflict_never_starts_or_kills_another_service(self):
-        with patch.object(dt, "port_open", return_value=True), patch.object(dt, "owns_server", return_value=False), \
-             patch.object(dt.subprocess, "Popen") as start, patch.object(dt.os, "kill") as kill:
-            with self.assertRaisesRegex(RuntimeError, "occupied"):
-                dt.ensure_server(self.config)
-            start.assert_not_called()
-            kill.assert_not_called()
+    def test_port_conflict_uses_another_local_port_without_killing_foreign_service(self):
+        self.config_path = self.root / "runtime.json"
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as foreign:
+            foreign.bind(("127.0.0.1", 0))
+            foreign.listen()
+            foreign_port = foreign.getsockname()[1]
+            registration = {key: value for key, value in self.config.items()
+                            if key not in ("config_path", "runtime_root")}
+            registration["port"] = foreign_port
+            self.config_path.write_text(json.dumps(registration))
+            self.config = dt.load_runtime(self.config_path)
+            with dt.lock_file(self.root / "server-operation.lock"), \
+                 patch.object(dt, "port_open", return_value=True), \
+                 patch.object(dt, "owns_server", side_effect=lambda state: bool(state.get("launch_token"))), \
+                 patch.object(dt, "process_snapshot", return_value=self.state()["process"]), \
+                 patch.object(dt.subprocess, "Popen") as start, patch.object(dt.os, "kill") as kill:
+                start.return_value.pid = self.state()["pid"]
+                start.return_value.poll.return_value = None
+                result = dt.ensure_server(self.config)
+                command = start.call_args.args[0]
+                self.assertNotEqual(self.config["port"], foreign_port)
+                self.assertEqual(command[command.index("--address") + 1], "127.0.0.1")
+                self.assertEqual(int(command[command.index("--port") + 1]), self.config["port"])
+                self.assertEqual(result["port"], self.config["port"])
+                self.assertEqual(json.loads(self.config_path.read_text()), {**registration, "port": self.config["port"]})
+                kill.assert_not_called()
+                start.return_value.terminate.assert_not_called()
+                start.return_value.kill.assert_not_called()
+            # The real foreign listener remains available after fallback.
+            self.assertTrue(dt.port_open(foreign_port))
+            self.assertEqual(foreign.getsockname(), ("127.0.0.1", foreign_port))
+
+    def test_transport_port_does_not_overwrite_staged_or_changed_registration(self):
+        original = self.config_path.read_bytes()
+        self.assertFalse(dt.persist_runtime_port(self.config, 12345))
+        self.assertEqual(self.config_path.read_bytes(), original)
+        registered = self.root / "runtime.json"
+        registered.write_bytes(original)
+        config = dt.load_runtime(registered)
+        changed = {**json.loads(original), "models_directory": str(self.root / "new-models")}
+        registered.write_text(json.dumps(changed))
+        self.assertFalse(dt.persist_runtime_port(config, 12345))
+        self.assertEqual(json.loads(registered.read_text()), changed)
+        registered.unlink()
+        registered.symlink_to(self.config_path)
+        self.assertFalse(dt.persist_runtime_port(dt.load_runtime(registered), 12345))
+        self.assertTrue(registered.is_symlink())
+        self.assertEqual(self.config_path.read_bytes(), original)
 
     def test_migrated_encoder_pair_keeps_cache_identity_and_rejects_corruption(self):
         models = Path(self.config["models_directory"])
@@ -244,6 +286,11 @@ class DrawThingsTests(unittest.TestCase):
              patch.object(dt, "SERVER_SIZE", server.stat().st_size), patch.object(dt, "SERVER_SHA256", dt.common.sha(server)), \
              patch.object(dt, "ensure_server") as start:
             before, _ = dt.check_runtime(runtime_config=self.config_path)
+            registration = json.loads(self.config_path.read_text())
+            registration["port"] = 54123
+            self.config_path.write_text(json.dumps(registration))
+            different_port, _ = dt.check_runtime(runtime_config=self.config_path)
+            self.assertEqual(before["fingerprint"], different_port["fingerprint"])
             encoder.write_bytes(metadata_data)
             tensor.write_bytes(tensor_data)
             after, _ = dt.check_runtime(runtime_config=self.config_path)

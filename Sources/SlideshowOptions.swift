@@ -83,6 +83,21 @@ struct SlideshowOptions: View {
             Divider()
             ScrollView {
                 VStack(spacing: 18) {
+                    settingsSection("Models & Downloads", symbol: "arrow.down.circle") {
+                        Text("Models are checked before playback. Missing local FLUX models download automatically. Apple Photos models are requested through macOS; if Apple requires setup in Photos, the app will explain the next step.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button(model.modelSetupRunning ? "Cancel Download" : "Download / Check Models") {
+                                if model.modelSetupRunning { model.cancelModelSetup() } else { model.downloadModels() }
+                            }.disabled(!model.modelSetupRunning && (model.busy || model.albumPlaying))
+                            if model.needsPhotosSetup { Button("Open Photos", action: model.openPhotosForModels) }
+                            Spacer()
+                        }
+                        if model.modelSetupRunning { ProgressView().controlSize(.small) }
+                        if let setup = model.modelSetupStatus {
+                            Text(setup).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        }
+                    }
                     settingsSection("Playback", symbol: "play.rectangle") {
                         Picker("Screen framing", selection: $model.framing) {
                             ForEach(FramingMode.allCases, id: \.self) { Text($0.title).tag($0) }
@@ -126,7 +141,7 @@ struct SlideshowOptions: View {
                     settingsSection("Photo Edge Expansion", symbol: "arrow.up.left.and.arrow.down.right") {
                         Toggle("Expand photo edges", isOn: $model.expandPhotoEdges)
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                            ForEach(ExpansionBackend.allCases, id: \.self) { backend in
+                            ForEach(model.availableExpansionBackends, id: \.self) { backend in
                                 settingChoice(backend.title, selected: model.expansionBackend == backend) {
                                     model.expansionBackend = backend
                                 }
@@ -134,23 +149,23 @@ struct SlideshowOptions: View {
                         }.disabled(!model.expandPhotoEdges)
                         Text(model.expansionBackend.expansionDescription)
                             .font(.caption).foregroundStyle(.secondary)
-                        if model.expansionBackend == .fluxKlein {
+                        if model.expansionBackend == .fluxKlein || model.expansionBackend == .drawThingsFlux {
+                            Text("Required models download automatically the first time you play. No Python, Homebrew, or developer tools need to be installed. Allow about 16 GB of free space for the initial download and processing.")
+                                .font(.caption).foregroundStyle(.secondary)
                             HStack {
-                                Label(model.kleinRuntimeConfigured ? "Python runtime configured" : "Python runtime needs setup",
-                                      systemImage: model.kleinRuntimeConfigured ? "checkmark.circle" : "info.circle")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                Button("Setup Help", action: model.expansionBackend == .fluxKlein ? model.showKleinSetup : model.showDrawThingsSetup)
                                 Spacer()
-                                Button("Choose Runtime…", action: model.chooseKleinRuntime)
-                                Button("Setup Help", action: model.showKleinSetup)
                             }
-                        }
-                        if model.expansionBackend == .drawThingsFlux {
-                            HStack {
-                                Label(model.drawThingsRuntimeConfigured ? "Local runtime configured" : "Local runtime needs setup",
-                                      systemImage: model.drawThingsRuntimeConfigured ? "checkmark.circle" : "info.circle")
-                                    .font(.caption).foregroundStyle(.secondary)
-                                Spacer()
-                                Button("Setup Help", action: model.showDrawThingsSetup)
+                            if model.expansionBackend == .fluxKlein {
+                                DisclosureGroup("Advanced runtime settings") {
+                                    HStack {
+                                        Text(model.kleinPythonPath.isEmpty ? "Automatic managed runtime" : "Custom runtime selected")
+                                            .font(.caption).foregroundStyle(.secondary)
+                                        Spacer()
+                                        Button("Choose…", action: model.chooseKleinRuntime)
+                                        if !model.kleinPythonPath.isEmpty { Button("Reset to Automatic", action: model.resetKleinRuntime) }
+                                    }.disabled(model.modelSetupRunning)
+                                }
                             }
                         }
                         HStack {
@@ -201,6 +216,11 @@ struct SlideshowOptions: View {
                             .font(.caption).foregroundStyle(.secondary)
                         Divider()
                         MusicSettings(music: model.music)
+                    }
+                    DisclosureGroup("Experimental research tools") {
+                        Toggle("Show Apple Photos Extend research backend", isOn: $model.showResearchBackends)
+                        Text("Requires a separate developer setup and is restricted to the Trip research album. This is not part of normal slideshow setup.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(24)
             }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install the optional pinned Draw Things runtime for Spatial Slideshow.
 
-Only explicit setup downloads files. It never starts a server, changes slideshow
+Setup downloads missing files automatically when selected in the app. It never starts a server, changes slideshow
 settings, deletes photo caches, or reads photos. Playback uses loopback only.
 """
 from __future__ import annotations
@@ -13,10 +13,14 @@ import os
 from pathlib import Path
 import platform
 import shutil
+import socket
 import subprocess
 import sys
-import urllib.request
 import uuid
+
+# Avoid writing bytecode into the signed app bundle.
+sys.dont_write_bytecode = True
+from SetupSupport import (download_verified, install_environment, installation_lock, remaining_bytes)
 
 RELEASE = "v26.0910.1"
 PORT = 7863
@@ -114,29 +118,8 @@ def locate_helper(explicit):
 
 def download_asset(name, destination):
     url = f"https://github.com/drawthingsai/draw-things-community/releases/download/{RELEASE}/{name}"
-    expected = ASSETS[name]
-    temporary = destination.with_name("." + name + ".download-" + uuid.uuid4().hex)
-    request = urllib.request.Request(url, headers={"User-Agent": "SpatialSlideshow-Setup"})
     say(f"Downloading official Draw Things {RELEASE} · {name}")
-    try:
-        with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as output:
-            total = 0
-            last_report = 0
-            while chunk := response.read(1024 * 1024):
-                total += len(chunk)
-                if total > expected[0]:
-                    raise RuntimeError(f"The downloaded {name} is larger than the pinned release asset.")
-                output.write(chunk)
-                if total - last_report >= 64 * 1024 * 1024:
-                    say(f"{name}: {total / expected[0]:.0%}")
-                    last_report = total
-        if not verified(temporary, expected):
-            raise RuntimeError(f"The downloaded {name} did not match the pinned checksum. Try setup again.")
-        temporary.chmod(0o755)
-        os.replace(temporary, destination)
-    finally:
-        # This unique partial file belongs to this invocation only.
-        temporary.unlink(missing_ok=True)
+    download_verified(url, destination, ASSETS[name], executable=True)
 
 
 def install_asset(name, root, seed, no_download):
@@ -200,8 +183,45 @@ if problems:
     run([python, "-c", code, json.dumps(PINNED_PACKAGES)], capture_output=True, text=True)
 
 
+def quarantine_models(models, names):
+    quarantine = models / (".invalid-" + uuid.uuid4().hex)
+    quarantine.mkdir()
+    for name in names:
+        parts = [name, name + "-tensordata"] if name == "qwen_3_4b_q8p.ckpt" else [name]
+        for part in parts:
+            original = models / part
+            if original.exists():
+                os.replace(original, quarantine / part)
+    say(f"Kept damaged model files in {quarantine.name} · downloading verified replacements")
+
+
+def choose_port(root):
+    # Keep the port of a registered app-owned server during a repair. Otherwise
+    # avoid common loopback conflicts without changing unrelated processes.
+    try:
+        previous = json.loads((root / "runtime.json").read_text())
+        state = json.loads((root / "server-state.json").read_text())
+        port = previous["port"]
+        pid = state["pid"]
+        token = state["launch_token"]
+        command = subprocess.check_output(["/bin/ps", "-p", str(pid), "-o", "command="], text=True).strip()
+        if (type(port) is int and 1024 <= port <= 65535 and isinstance(token, str)
+                and token and ("SpatialSlideshow-" + token) in command
+                and previous["server_binary"] == state["binary"] and state["binary"] in command):
+            return port
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        pass
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("127.0.0.1", PORT))
+        except OSError:
+            probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--runtime-root", type=Path, help="Override the managed runtime directory (for isolated installation/testing).")
     parser.add_argument("--python", type=Path, help="Python 3.12 used to create the managed environment.")
     parser.add_argument("--use-existing", type=Path, help="Use an existing compatible Python 3.12 environment without modifying it.")
     parser.add_argument("--server-binary", type=Path, help="Copy an already downloaded official gRPCServerCLI-macOS instead of downloading it.")
@@ -210,11 +230,14 @@ def main():
     parser.add_argument("--helper-script", type=Path, help="Optional explicit path to ExpandPhotoDrawThings.py.")
     parser.add_argument("--no-download", action="store_true", help="Require an existing Python environment, binaries, and all model weights; never access the network.")
     args = parser.parse_args()
+    setup_lock = None
     try:
         if platform.system() != "Darwin" or platform.machine() != "arm64":
             raise RuntimeError("This Draw Things runtime requires an Apple Silicon Mac.")
         helper = locate_helper(args.helper_script)
-        root = support_root()
+        root = args.runtime_root.expanduser().absolute() if args.runtime_root else support_root()
+        setup_lock = installation_lock(root)
+        setup_lock.__enter__()
         models = args.models_directory.expanduser().absolute() if args.models_directory else root / "models"
         if models.exists() and not models.is_dir():
             raise RuntimeError("The selected --models-directory is not a directory.")
@@ -225,23 +248,37 @@ def main():
                 if not verified(seeds[name], ASSETS[name]):
                     raise RuntimeError(f"The supplied {name} does not match the pinned official release {RELEASE}.")
         missing_models = 0
+        missing_model_names = []
+        damaged_models = []
         conversion_pending = True
         for name, expected in WEIGHTS.items():
             path = models / name
             if path.exists():
                 say(f"Checking existing model · {name}")
                 if not verified_model(models, name):
-                    raise RuntimeError(f"Existing {path} does not match the pinned model checksum. Choose another --models-directory or move that file aside yourself. No existing file was removed.")
-                if name == "qwen_3_4b_q8p.ckpt" and path.stat().st_size == MIGRATED_QWEN[name][0]:
+                    if args.models_directory or args.no_download:
+                        raise RuntimeError(f"Existing {path} does not match the pinned model checksum. Choose another --models-directory or move that file aside yourself. No existing file was removed.")
+                    damaged_models.append(name)
+                    missing_model_names.append(name)
+                    missing_models += remaining_bytes(path, expected)
+                elif name == "qwen_3_4b_q8p.ckpt" and path.stat().st_size == MIGRATED_QWEN[name][0]:
                     conversion_pending = False
             else:
-                if name == "qwen_3_4b_q8p.ckpt" and (models / (name + "-tensordata")).exists():
-                    raise RuntimeError("The Qwen model has a tensor-data file but no metadata file. Choose another --models-directory or restore the matching model pair. No existing file was removed.")
-                missing_models += expected[0]
-        missing_binaries = sum(expected[0] for name, expected in ASSETS.items() if not (root / "bin" / name).exists())
+                orphan = name == "qwen_3_4b_q8p.ckpt" and (models / (name + "-tensordata")).exists()
+                if orphan:
+                    if args.models_directory or args.no_download:
+                        raise RuntimeError("The Qwen model has a tensor-data file but no metadata file. Choose another --models-directory or restore the matching model pair. No existing file was removed.")
+                    damaged_models.append(name)
+                missing_model_names.append(name)
+                missing_models += remaining_bytes(path, expected)
+        required_binaries = ["gRPCServerCLI-macOS"]
+        if args.cli_binary:
+            required_binaries.append("draw-things-cli")
+        missing_binaries = sum(remaining_bytes(root / "bin" / name, ASSETS[name])
+                               for name in required_binaries if not (root / "bin" / name).exists())
         if args.no_download and not args.use_existing:
             raise RuntimeError("--no-download requires --use-existing /path/to/environment/bin/python.")
-        if args.no_download and missing_models:
+        if args.no_download and missing_model_names:
             raise RuntimeError("Some model files are missing. Supply --models-directory with all three pinned weights, or run setup without --no-download.")
         conversion_at = models if conversion_pending else None
         require_space([(models, missing_models), (root, missing_binaries + (0 if args.use_existing else ENVIRONMENT_ALLOWANCE))], conversion_at=conversion_at)
@@ -254,27 +291,29 @@ def main():
             if candidate is None and sys.version_info[:2] == (3, 12):
                 candidate = sys.executable
             if candidate is None:
-                raise RuntimeError("Install Python 3.12, then retry, or pass --python /path/to/python3.12.")
+                raise RuntimeError("Use the Download Model button in Spatial Slideshow to install its portable Python 3.12 runtime.")
             check_python(Path(candidate))
             root.mkdir(parents=True, exist_ok=True)
-            environment = root / "venv"
-            python = environment / "bin/python"
-            if not python.exists():
-                say("Creating the managed Python 3.12 environment")
-                run([candidate, "-m", "venv", environment])
-            check_python(python)
-            say("Installing pinned Draw Things Python packages")
-            run([python, "-m", "pip", "install", "--disable-pip-version-check", "--no-cache-dir",
-                 *[f"{name}=={version}" for name, version in PINNED_PACKAGES.items()]])
+            python = install_environment(root, candidate, "drawthings")
         check_packages(python)
         root.mkdir(parents=True, exist_ok=True)
         server = install_asset("gRPCServerCLI-macOS", root, seeds["gRPCServerCLI-macOS"], args.no_download)
-        cli = install_asset("draw-things-cli", root, seeds["draw-things-cli"], args.no_download)
+        # The CLI was needed by the old downloader. Keep supporting an explicit
+        # local CLI seed, but do not download another 265 MB that playback never uses.
+        if args.cli_binary:
+            install_asset("draw-things-cli", root, seeds["draw-things-cli"], args.no_download)
         models.mkdir(parents=True, exist_ok=True)
         require_space([(models, missing_models)], conversion_at=conversion_at)
-        if missing_models:
+        if damaged_models:
+            quarantine_models(models, damaged_models)
+        if missing_model_names:
             say(f"Downloading FLUX.2 Klein 4B and dependencies · {missing_models / GIB:.2f} GiB remaining")
-            run([cli, "models", "ensure", "--models-dir", models, "--model", MODEL])
+            # The pinned Draw Things CLI uses static.libnnc.org for these files.
+            # Download directly to get byte progress and checked, resumable files
+            # without allowing a changed online model catalog to select versions.
+            for name, expected in WEIGHTS.items():
+                if not verified_model(models, name):
+                    download_verified(f"https://static.libnnc.org/{name}", models / name, expected)
         else:
             say("Reusing the complete verified model set, including any converted Qwen tensor pair")
         for name, expected in WEIGHTS.items():
@@ -282,7 +321,7 @@ def main():
             if not verified_model(models, name):
                 raise RuntimeError(f"Downloaded {name} does not match the pinned checksum. Move that incomplete file aside yourself and retry setup.")
         registration = {"schema": 1, "python": str(python), "server_binary": str(server),
-                        "models_directory": str(models), "port": PORT, "release": RELEASE}
+                        "models_directory": str(models), "port": choose_port(root), "release": RELEASE}
         staged = root / (".runtime-" + uuid.uuid4().hex + ".json")
         try:
             staged.write_text(json.dumps(registration, indent=2, sort_keys=True) + "\n")
@@ -298,7 +337,7 @@ def main():
         finally:
             staged.unlink(missing_ok=True)
         say("Complete. Choose Draw Things · FLUX.2 Klein in Spatial Slideshow → Settings → Photo Edge Expansion.")
-        say("The app starts its local server only when needed, bound to 127.0.0.1 on port 7863. No server was started by setup.")
+        say(f"The app starts its local server only when needed, bound to 127.0.0.1 on port {registration['port']}. No server was started by setup.")
         print("Runtime registration: " + str(root / "runtime.json"), flush=True)
     except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
         detail = str(error)
@@ -306,6 +345,9 @@ def main():
             detail += "\n" + str(error.stderr).strip()
         print("ERROR: " + detail, file=sys.stderr, flush=True)
         return 1
+    finally:
+        if setup_lock is not None:
+            setup_lock.__exit__(None, None, None)
     return 0
 
 

@@ -31,17 +31,23 @@ archive="SpatialSlideshow-$version-macOS-arm64.zip"
 }
 
 # Match SpliceKit: verify credentials, then sign embedded code inside-out with
-# Hardened Runtime and secure timestamps. No extra entitlements are required.
+# Hardened Runtime and secure timestamps. The main app must opt in to Photos
+# access or macOS denies PhotoKit without displaying the permission prompt.
 xcrun notarytool history --keychain-profile "$profile" >/dev/null
 work=$(mktemp -d "$PWD/build/notarization/release-XXXXXX")
 app="$work/Spatial Slideshow.app"
 printf 'Signing workspace: %s\n' "$work"
 ditto "$source_app" "$app"
-for helper in GenerateScene RenderSlideshow ExpandPhoto PrepareExpansionPhoto; do
+for helper in GenerateScene RenderSlideshow ExpandPhoto PrepareExpansionPhoto AppleModelSetup; do
     codesign --force --options runtime --timestamp --sign "$sign_id" "$app/Contents/Resources/$helper"
 done
-codesign --force --options runtime --timestamp --sign "$sign_id" "$app"
+codesign --force --options runtime --timestamp --sign "$sign_id" \
+    --entitlements SpatialSlideshow.entitlements "$app"
 codesign --verify --deep --strict "$app"
+codesign -d --entitlements :- "$app" > "$work/entitlements.plist"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :com.apple.security.personal-information.photos-library' "$work/entitlements.plist")" == true ]] || {
+    echo 'The app is missing its required Photos Library entitlement.' >&2; exit 1
+}
 
 ditto -c -k --sequesterRsrc --keepParent "$app" "$work/submission.zip"
 xcrun notarytool submit "$work/submission.zip" --keychain-profile "$profile" \

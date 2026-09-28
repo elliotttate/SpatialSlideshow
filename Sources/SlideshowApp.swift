@@ -13,6 +13,14 @@ final class SlideshowModel: ObservableObject {
     @Published var expandPhotoEdges = UserDefaults.standard.bool(forKey: "expandPhotoEdges") { didSet { UserDefaults.standard.set(expandPhotoEdges, forKey: "expandPhotoEdges") } }
     @Published var expansionBackend = ExpansionBackend(rawValue: UserDefaults.standard.string(forKey: "expansionBackend") ?? "appleCleanup") ?? .appleCleanup { didSet { UserDefaults.standard.set(expansionBackend.rawValue, forKey: "expansionBackend") } }
     @Published var kleinPythonPath = UserDefaults.standard.string(forKey: "kleinPythonPath") ?? "" { didSet { UserDefaults.standard.set(kleinPythonPath, forKey: "kleinPythonPath") } }
+    @Published var showResearchBackends = UserDefaults.standard.bool(forKey: "showResearchBackends") { didSet { UserDefaults.standard.set(showResearchBackends, forKey: "showResearchBackends") } }
+    var availableExpansionBackends: [ExpansionBackend] {
+        ExpansionBackend.allCases.filter { $0 != .applePhotosExtend || showResearchBackends || expansionBackend == .applePhotosExtend }
+    }
+    @Published var modelSetupStatus: String?
+    @Published var modelSetupRunning = false
+    @Published var needsPhotosSetup = false
+    private var setupTask: RenderSession?
     var kleinRuntimeConfigured: Bool { KleinRuntime.pythonURL(override: kleinPythonPath) != nil }
     var drawThingsRuntimeConfigured: Bool { DrawThingsRuntime.pythonURL() != nil }
     @Published var expansionPercent = min(20, max(1, UserDefaults.standard.object(forKey: "expansionPercent") as? Int ?? 5)) { didSet { UserDefaults.standard.set(expansionPercent, forKey: "expansionPercent") } }
@@ -107,7 +115,74 @@ final class SlideshowModel: ObservableObject {
     func showDrawThingsSetup() {
         if let url = Bundle.main.url(forResource: "DrawThingsSetup", withExtension: "html") { NSWorkspace.shared.open(url) }
     }
+    func downloadModels() {
+        guard !modelSetupRunning, !busy, !albumPlaying, let tools = Bundle.main.resourceURL else { return }
+        let task = RenderSession(); setupTask = task; modelSetupRunning = true
+        modelSetupStatus = "Checking model requirements…"
+        let backend = expansionBackend, pythonPath = kleinPythonPath, needsExpansion = expandPhotoEdges
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            do {
+                try self?.ensureAppleModels(tools: tools, cleanup: needsExpansion && backend == .appleCleanup, task: task) { message in
+                    DispatchQueue.main.async { [weak self] in
+                        guard self?.setupTask === task else { return }
+                        self?.modelSetupStatus = message
+                    }
+                }
+                if needsExpansion && (backend == .fluxKlein || backend == .drawThingsFlux) {
+                    _ = try RuntimeInstaller.ensure(backend: backend, tools: tools, override: pythonPath,
+                        cancelled: { task.isCancelled }) { message in
+                            DispatchQueue.main.async { [weak self] in
+                                guard self?.setupTask === task else { return }
+                                self?.modelSetupStatus = message
+                            }
+                        }
+                }
+                if needsExpansion && backend == .applePhotosExtend {
+                    _ = try PhotoExpansionConfiguration.resolve(enabled: true, percent: 5, backend: backend, tools: tools,
+                        albumTitle: "Trip", cancelled: { task.isCancelled })
+                }
+                try task.check()
+                DispatchQueue.main.async { [weak self] in
+                    guard self?.setupTask === task else { return }
+                    self?.modelSetupRunning = false; self?.setupTask = nil
+                    self?.modelSetupStatus = needsExpansion ? "Photos 3D models and \(backend.title) are ready." : "Photos 3D models are ready."
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard self?.setupTask === task else { return }
+                    self?.modelSetupRunning = false; self?.setupTask = nil
+                    self?.modelSetupStatus = error is CancellationError ? "Download cancelled. You can resume setup at any time." : error.localizedDescription
+                }
+            }
+        }
+    }
+    func cancelModelSetup() {
+        setupTask?.cancel()
+        modelSetupStatus = "Cancelling model setup…"
+    }
+    func resetKleinRuntime() { kleinPythonPath = ""; modelSetupStatus = nil }
+    func openPhotosForModels() { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Photos.app")) }
+    private func ensureAppleModels(tools: URL, cleanup: Bool, task: RenderSession, progress: (String) -> Void) throws {
+        let helper = tools.appendingPathComponent("AppleModelSetup")
+        let diagnostics = try Self.support().appendingPathComponent("Diagnostics", isDirectory: true)
+        try FileManager.default.createDirectory(at: diagnostics, withIntermediateDirectories: true)
+        for kind in cleanup ? ["reframe", "cleanup"] : ["reframe"] {
+            let log = diagnostics.appendingPathComponent("Apple-model-\(kind)-\(UUID().uuidString).log")
+            do {
+                try HelperProcess.run(helper, arguments: ["--ensure", kind, "30"], log: log,
+                    environment: ProcessInfo.processInfo.environment, stage: "Preparing Apple Photos \(kind == "reframe" ? "3D" : "Clean Up") models",
+                    timeout: 45, heartbeat: 1, slowAfter: 30, cancelled: { task.isCancelled }, progress: progress,
+                    liveOutputPrefixes: ["SETUP "])
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                DispatchQueue.main.async { [weak self] in self?.needsPhotosSetup = true }
+                throw error
+            }
+        }
+        DispatchQueue.main.async { [weak self] in self?.needsPhotosSetup = false }
+    }
     func shutdown() {
+        cancelModelSetup()
         stop()
         DrawThingsRuntime.stopServer()
     }
@@ -171,10 +246,6 @@ final class SlideshowModel: ObservableObject {
         playback.onPlaybackWait = { [weak self] message in
             self?.playbackIssue = message
             self?.logPlayback(message ?? "Playback ready")
-        }
-        if let demo = Bundle.main.url(forResource: "Demo", withExtension: "mp4") {
-            let demoStarts: [Double] = [0, 6, 11.2, 16.4, 21.6, 26.8]
-            playMovie(demo, photoStarts: demoStarts)
         }
     }
     private func itemLabel(_ index: Int) -> String { albumVideoIndexes.contains(index) ? "Video" : "Photo" }
@@ -262,7 +333,7 @@ final class SlideshowModel: ObservableObject {
     }
     func playAlbum(_ title: String, assets selection: [PHAsset]) {
         let assets = selection.filter { $0.mediaType == .image || (includeVideos && $0.mediaType == .video) }
-        guard !assets.isEmpty, let tools = Bundle.main.resourceURL else { return }
+        guard !assets.isEmpty, !modelSetupRunning, let tools = Bundle.main.resourceURL else { return }
         stop(); movie = nil; photos = []; albumTitle = title; lastAlbum = selection; albumCount = assets.count
         renderedSettings = currentRenderSettings
         albumVideoCount = assets.filter { $0.mediaType == .video }.count
@@ -285,7 +356,21 @@ final class SlideshowModel: ObservableObject {
             do {
                 let root = try Self.support()
                 task.diagnosticsDirectory = root.appendingPathComponent("Diagnostics")
-                let expansion = try PhotoExpansionConfiguration.resolve(enabled: expandEdges, percent: extraPercent, zoomOutPercent: zoomOut, backend: backend, kleinPythonPath: pythonPath, tools: tools, albumTitle: title, cancelled: { task.isCancelled })
+                if assets.contains(where: { $0.mediaType == .image }) {
+                    try self?.ensureAppleModels(tools: tools, cleanup: expandEdges && backend == .appleCleanup, task: task) { message in
+                        DispatchQueue.main.async { [weak self] in
+                            guard self?.session === task else { return }
+                            self?.preparationStatus = message
+                        }
+                    }
+                }
+                let expansion = try PhotoExpansionConfiguration.resolve(enabled: expandEdges && assets.contains(where: { $0.mediaType == .image }), percent: extraPercent, zoomOutPercent: zoomOut, backend: backend, kleinPythonPath: pythonPath, tools: tools, albumTitle: title, cancelled: { task.isCancelled }, automaticallyInstall: true) { message in
+                    DispatchQueue.main.async { [weak self] in
+                        guard self?.session === task else { return }
+                        self?.preparationStatus = message
+                        self?.modelSetupStatus = message
+                    }
+                }
                 // Previously rendered photos from this album can fill a wait,
                 // even before their turn in this run. No new model work here.
                 let cacheLookupStarted = Date()
@@ -447,7 +532,7 @@ final class SlideshowModel: ObservableObject {
         } else { playAlbum(title, assets: lastAlbum) }
     }
     func build() {
-        guard !photos.isEmpty, !busy, let tools = Bundle.main.resourceURL else { return }
+        guard !photos.isEmpty, !busy, !modelSetupRunning, let tools = Bundle.main.resourceURL else { return }
         stop(); busy = true; latestFailure = nil; failureCount = 0
         beginPlaybackLog()
         renderedSettings = currentRenderSettings
@@ -459,7 +544,19 @@ final class SlideshowModel: ObservableObject {
         status = "Preparing Photos models…"
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             do {
-                let expansion = try PhotoExpansionConfiguration.resolve(enabled: expandEdges, percent: extraPercent, zoomOutPercent: zoomOut, backend: backend, kleinPythonPath: pythonPath, tools: tools, cancelled: { task.isCancelled })
+                try self?.ensureAppleModels(tools: tools, cleanup: expandEdges && backend == .appleCleanup, task: task) { message in
+                    DispatchQueue.main.async { [weak self] in
+                        guard self?.session === task else { return }
+                        self?.status = message
+                        self?.modelSetupStatus = message
+                    }
+                }
+                let expansion = try PhotoExpansionConfiguration.resolve(enabled: expandEdges, percent: extraPercent, zoomOutPercent: zoomOut, backend: backend, kleinPythonPath: pythonPath, tools: tools, cancelled: { task.isCancelled }, automaticallyInstall: true) { message in
+                    DispatchQueue.main.async { [weak self] in
+                        guard self?.session === task else { return }
+                        self?.status = message
+                    }
+                }
                 task.diagnosticsDirectory = try Self.support().appendingPathComponent("Diagnostics")
                 let job = try Self.support().appendingPathComponent("Renders/\(UUID().uuidString)", isDirectory: true)
                 try FileManager.default.createDirectory(at: job, withIntermediateDirectories: true)
@@ -491,6 +588,9 @@ final class SlideshowModel: ObservableObject {
                     DispatchQueue.main.async { [weak self] in if self?.session === task { self?.status = phase; self?.logPlayback(phase) } }
                 })
                 try task.check()
+                // Keep the final movie and logs; scene buffers can be much
+                // larger than the movie and are no longer needed after export.
+                for scene in scenes { try? FileManager.default.removeItem(atPath: scene) }
                 completed = true
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.session === task else { return }
@@ -657,6 +757,7 @@ struct SlideshowView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in model.shutdown() }
         .sheet(isPresented: $browser) { AlbumBrowser(library: model.library, shuffle: $model.shuffleAlbum, includeVideos: $model.includeVideos, play: model.playAlbum) }
         .alert("Slideshow error", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+            if model.needsPhotosSetup { Button("Open Photos", action: model.openPhotosForModels) }
             Button("Show Diagnostics…", action: model.showDiagnostics)
             Button("OK") { model.error = nil }
         } message: { Text(model.error ?? "") }

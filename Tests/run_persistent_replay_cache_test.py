@@ -15,5 +15,5 @@ with tempfile.TemporaryDirectory(prefix="spatial-persistent-replay-test-") as te
     enums = temporary / "Enums.swift"
     enums.write_text(declarations)
     executable = temporary / "PersistentReplayCacheTest"
-    subprocess.run(["xcrun", "swiftc", "-O", str(enums), str(root / "Sources/PlaybackPipeline.swift"), str(root / "Sources/HelperProcess.swift"), str(root / "Sources/NativeExtendRecovery.swift"), str(root / "Sources/PhotoExpansion.swift"), str(root / "Sources/VideoClipCache.swift"), str(root / "Sources/StorageRecovery.swift"), str(root / "Sources/ClipCacheCatalog.swift"), str(root / "Tests/PersistentReplayCacheTest.swift"), "-o", str(executable)], env=env, check=True)
+    subprocess.run(["xcrun", "swiftc", "-O", str(enums), str(root / "Sources/PlaybackPipeline.swift"), str(root / "Sources/HelperProcess.swift"), str(root / "Sources/RuntimeInstaller.swift"), str(root / "Sources/NativeExtendRecovery.swift"), str(root / "Sources/PhotoExpansion.swift"), str(root / "Sources/VideoClipCache.swift"), str(root / "Sources/StorageRecovery.swift"), str(root / "Sources/ClipCacheCatalog.swift"), str(root / "Tests/PersistentReplayCacheTest.swift"), "-o", str(executable)], env=env, check=True)
     subprocess.run([str(executable), str(fixtures / "playback-short.mp4"), str(temporary / "cache"), str(REPORTS / "persistent-replay-cache-test.json")], check=True)

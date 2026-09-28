@@ -20,24 +20,8 @@ private struct CleanupModels {
     let identity: [String: Any]
 
     static func installed() throws -> CleanupModels {
-        let assets = URL(fileURLWithPath: "/System/Library/AssetsV2/com_apple_MobileAsset_UAF_Photos_MagicCleanup/purpose_auto", isDirectory: true)
         let names = ["inpainting.mlmodelc", "refinement.mlmodelc"]
-        let candidates: [URL]
-        do {
-            candidates = try FileManager.default.contentsOfDirectory(at: assets, includingPropertiesForKeys: nil)
-                .filter { $0.pathExtension == "asset" }
-                .map { $0.appendingPathComponent(".AssetData", isDirectory: true) }
-                .filter { root in names.allSatisfy { name in
-                    FileManager.default.isReadableFile(atPath: root.appendingPathComponent(name).path)
-                } }
-        } catch {
-            throw ExpansionError(message: "Apple Photos Fast Clean Up models are not installed or readable: \(error.localizedDescription)")
-        }
-        guard candidates.count == 1, let root = candidates.first else {
-            throw ExpansionError(message: candidates.isEmpty
-                ? "Apple Photos Fast Clean Up models are not installed or readable."
-                : "Multiple installed Fast Clean Up model pairs were found; refusing to choose an unknown version.")
-        }
+        let root = try AppleModelLocations.cleanupRoot()
         for name in names {
             guard FileManager.default.isReadableFile(atPath: root.appendingPathComponent(name).appendingPathComponent("model.specialization.bundle").path) else {
                 throw ExpansionError(message: "The installed \(name) does not contain its precompiled specialization bundle.")

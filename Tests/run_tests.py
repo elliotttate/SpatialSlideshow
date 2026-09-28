@@ -9,7 +9,7 @@ import time
 from test_support import ROOT, TEST_ROOT, REPORTS, developer_environment, ensure_fixtures
 
 ALL = ["storage", "preparation", "motion", "cache", "persistent-cache", "video-cache",
-       "playback", "displayed-playback", "navigation", "fullscreen", "music", "display-sleep", "helper-process", "native-extend-recovery"]
+       "playback", "displayed-playback", "navigation", "fullscreen", "music", "display-sleep", "helper-process", "native-extend-recovery", "apple-model-setup", "runtime-installer"]
 CORE = ALL[:6]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--core", action="store_true", help="Skip WindowServer, audio-playback and power-assertion checks")
@@ -29,6 +29,11 @@ def swift(name, sources):
             [str(ROOT / source) for source in sources] + ["-o", str(executable)]], str(executable)
 
 def commands(name):
+    if name == "runtime-installer":
+        return [[sys.executable, str(ROOT / "Tests/run_runtime_installer_test.py")]]
+    if name == "apple-model-setup":
+        binary = str(executables / "AppleModelSetupTest")
+        return [["xcrun", "clang", "-fobjc-arc", "-fmodules", "-framework", "Foundation", str(ROOT / "Tests/AppleModelSetupTest.m"), "-o", binary], [binary]]
     if name in ("cache", "persistent-cache", "video-cache"):
         script = {"cache": "run_clip_cache_test.py", "persistent-cache": "run_persistent_replay_cache_test.py", "video-cache": "run_video_clip_cache_test.py"}[name]
         return [[sys.executable, str(ROOT / "Tests" / script)]]
