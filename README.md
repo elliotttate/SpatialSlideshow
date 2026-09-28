@@ -120,3 +120,9 @@ SPATIAL_NOTARY_PROFILE='YourKeychainProfile' \
 This signs embedded helpers before the app, enables Hardened Runtime with secure timestamps, applies and verifies the main app's Photos Library entitlement, submits to Apple, staples and validates the accepted ticket, and runs Gatekeeper assessment and Apple's pre-distribution checks. The final ZIP and checksum are written to `dist/notarized/`; an optional second argument chooses another output directory. The source app remains untouched. Credentials stay in Keychain, and submission logs remain in ignored `build/notarization/`. Publish this final archive, which contains the stapled app, instead of the submission ZIP. The script never uploads to GitHub.
 
 [Architecture and research notes](Docs/RESEARCH.md) describe the working model routes and their limits. [Research probes](Research/README.md) preserve source-only diagnostics; no Apple binaries, disassembly, model weights, or decompiled implementations are included.
+
+## License
+
+Spatial Slideshow's source code and associated documentation are licensed under the [MIT License](LICENSE).
+
+Apple's frameworks and model assets, and any separately downloaded third-party models, runtimes, or libraries, remain subject to their respective licenses. This project's MIT license does not grant rights to redistribute those components.
