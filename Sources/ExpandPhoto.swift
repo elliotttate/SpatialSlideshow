@@ -6,7 +6,7 @@ import CryptoKit
 import PhotosGenerativeServices
 import Darwin
 
-private let expansionProtocolVersion = 1
+private let expansionProtocolVersion = 2
 private let expansionBackend = "PhotosGenerativeServices.InpaintGANPipeline"
 private let expansionTimeoutSeconds: UInt32 = 180
 
@@ -46,6 +46,7 @@ private struct CleanupModels {
         let identity: [String: Any] = [
             "schema": 1,
             "helper_protocol_version": expansionProtocolVersion,
+            "compositor_version": expansionCompositorVersion,
             "backend": expansionBackend,
             "model_root": root.path,
             "model_metadata_sha256": hash.finalize().map { String(format: "%02x", $0) }.joined(),
@@ -74,6 +75,16 @@ private struct CleanupModels {
     }
 }
 
+/// Seam settings at model resolution (source long edge 1024). The GAN repaints
+/// a thin band inside the photograph so its texture continues across the join;
+/// detail then hands back to the full-resolution original over `inset` pixels
+/// while lighting differences spread over `outerReach` pixels of new border.
+private enum SeamSettings {
+    static let maskOverlap = 12
+    static let inset = 16
+    static let outerReach = 64
+}
+
 private struct ExpansionGeometry {
     let sourceWidth: Int
     let sourceHeight: Int
@@ -83,6 +94,8 @@ private struct ExpansionGeometry {
     let modelHeight: Int
     let modelPadX: Int
     let modelPadY: Int
+    let overlap: Int
+    let inset: Int
 
     init(width: Int, height: Int, percent: Int) throws {
         guard width > 0, height > 0, width <= 100_000, height <= 100_000 else {
@@ -99,6 +112,10 @@ private struct ExpansionGeometry {
         // guarantees coverage of the requested canvas without an empty edge.
         modelPadX = max(1, Int(ceil(Double(padX) * Double(modelWidth) / Double(width))))
         modelPadY = max(1, Int(ceil(Double(padY) * Double(modelHeight) / Double(height))))
+        // Tiny inputs keep a protected interior; the seam band shrinks instead.
+        let limit = (min(modelWidth, modelHeight) - 1) / 4
+        inset = max(0, min(SeamSettings.inset, limit))
+        overlap = max(0, min(SeamSettings.maskOverlap, inset))
     }
 
     var outputWidth: Int { sourceWidth + 2 * padX }
@@ -109,15 +126,22 @@ private struct ExpansionGeometry {
     var modelExtent: CGRect { CGRect(x: 0, y: 0, width: modelWidth + 2 * modelPadX, height: modelHeight + 2 * modelPadY) }
     var restoreScaleX: CGFloat { CGFloat(sourceWidth) / CGFloat(modelWidth) }
     var restoreScaleY: CGFloat { CGFloat(sourceHeight) / CGFloat(modelHeight) }
-    var featherX: CGFloat { min(3 * restoreScaleX, CGFloat(sourceWidth) / 2) }
-    var featherY: CGFloat { min(3 * restoreScaleY, CGFloat(sourceHeight) / 2) }
+    /// Full-resolution width of the band where model-resolution seam context
+    /// hands back to exact source pixels. Zero for inputs too small to band.
+    var featherX: CGFloat { min(CGFloat(inset) * restoreScaleX, CGFloat(sourceWidth) / 2) }
+    var featherY: CGFloat { min(CGFloat(inset) * restoreScaleY, CGFloat(sourceHeight) / 2) }
 }
 
 private func writeJSON(_ value: [String: Any], to url: URL) throws {
     try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic)
 }
 
-private func sourceBlendMask(box: CGRect, featherX: CGFloat, featherY: CGFloat, extent: CGRect) throws -> CIImage {
+/// Smoothstep restore mask: 1 inside the photograph beyond its feather band,
+/// easing to 0 at the photograph's edge, 0 across the whole generated border.
+private func sourceRestoreMask(box: CGRect, featherX: CGFloat, featherY: CGFloat, extent: CGRect) throws -> CIImage {
+    guard featherX > 0, featherY > 0 else {
+        return CIImage(color: .white).cropped(to: box).composited(over: CIImage(color: .black).cropped(to: extent)).cropped(to: extent)
+    }
     func ramp(from a: CGPoint, to b: CGPoint) throws -> CIImage {
         guard let filter = CIFilter(name: "CILinearGradient", parameters: [
             "inputPoint0": CIVector(cgPoint: a), "inputPoint1": CIVector(cgPoint: b),
@@ -133,9 +157,73 @@ private func sourceBlendMask(box: CGRect, featherX: CGFloat, featherY: CGFloat, 
         ramp(from: CGPoint(x: box.midX, y: box.minY), to: CGPoint(x: box.midX, y: box.minY + featherY)),
         ramp(from: CGPoint(x: box.midX, y: box.maxY), to: CGPoint(x: box.midX, y: box.maxY - featherY))
     ]
-    return sides.dropFirst().reduce(sides[0]) { mask, side in
+    let linear = sides.dropFirst().reduce(sides[0]) { mask, side in
         mask.applyingFilter("CIMinimumCompositing", parameters: [kCIInputBackgroundImageKey: side])
-    }.cropped(to: extent)
+    }
+    // Zero slope at both ends of the band hides the join without a visible stripe.
+    let ease = CIVector(x: 0, y: 0, z: 3, w: -2)
+    return linear.applyingFilter("CIColorPolynomial", parameters: [
+        "inputRedCoefficients": ease, "inputGreenCoefficients": ease, "inputBlueCoefficients": ease,
+        "inputAlphaCoefficients": CIVector(x: 1, y: 0, z: 0, w: 0)
+    ]).cropped(to: extent)
+}
+
+private func readFloats(_ image: CIImage, extent: CGRect, context: CIContext, colorSpace: CGColorSpace) -> FloatRGBImage {
+    let width = Int(extent.width), height = Int(extent.height)
+    var rgba = [Float](repeating: 0, count: width * height * 4)
+    rgba.withUnsafeMutableBytes { raw in
+        context.render(image, toBitmap: raw.baseAddress!, rowBytes: width * 16, bounds: extent, format: .RGBAf, colorSpace: colorSpace)
+    }
+    var rgb = [Float](repeating: 0, count: width * height * 3)
+    for i in 0..<(width * height) { rgb[3 * i] = rgba[4 * i]; rgb[3 * i + 1] = rgba[4 * i + 1]; rgb[3 * i + 2] = rgba[4 * i + 2] }
+    return FloatRGBImage(width: width, height: height, data: rgb)
+}
+
+private func makeImage(_ image: FloatRGBImage, colorSpace: CGColorSpace) -> CIImage {
+    var rgba = [Float](repeating: 1, count: image.width * image.height * 4)
+    for i in 0..<(image.width * image.height) {
+        rgba[4 * i] = image.data[3 * i]; rgba[4 * i + 1] = image.data[3 * i + 1]; rgba[4 * i + 2] = image.data[3 * i + 2]
+    }
+    let data = rgba.withUnsafeBufferPointer { Data(buffer: $0) }
+    return CIImage(bitmapData: data, bytesPerRow: image.width * 16, size: CGSize(width: image.width, height: image.height),
+                   format: .RGBAf, colorSpace: colorSpace)
+}
+
+private func readBytes(_ image: CIImage, extent: CGRect, context: CIContext, colorSpace: CGColorSpace) -> [UInt8] {
+    let width = Int(extent.width), height = Int(extent.height)
+    var bytes = [UInt8](repeating: 0, count: width * height * 4)
+    bytes.withUnsafeMutableBytes { raw in
+        context.render(image, toBitmap: raw.baseAddress!, rowBytes: width * 4, bounds: extent, format: .RGBA8, colorSpace: colorSpace)
+    }
+    return bytes
+}
+
+/// Compare the saved file's protected interior with the decoded source. The
+/// manifest claims exact pixels there, so a mismatch is an error, not a note.
+private func verifyPreservedInterior(saved: URL, source: CIImage, geometry: ExpansionGeometry, insetX: Int, insetY: Int,
+                                     context: CIContext, colorSpace: CGColorSpace) throws -> Int {
+    let width = geometry.sourceWidth - 2 * insetX, height = geometry.sourceHeight - 2 * insetY
+    guard width > 0, height > 0 else { return 0 }
+    guard let decoded = CIImage(contentsOf: saved, options: [.applyOrientationProperty: true]) else {
+        throw ExpansionError(message: "The saved expanded image could not be decoded for verification.")
+    }
+    // Compare in horizontal strips so a panorama does not need two full-size
+    // 8-bit copies at once.
+    var worst = 0
+    let stripRows = max(1, min(height, 4_000_000 / max(width, 1)))
+    var row = 0
+    while row < height {
+        let rows = min(stripRows, height - row)
+        let savedBox = CGRect(x: geometry.padX + insetX, y: geometry.padY + insetY + row, width: width, height: rows)
+        let sourceBox = CGRect(x: insetX, y: insetY + row, width: width, height: rows)
+        let expected = readBytes(source, extent: sourceBox, context: context, colorSpace: colorSpace)
+        let actual = readBytes(decoded, extent: savedBox, context: context, colorSpace: colorSpace)
+        for i in stride(from: 0, to: expected.count, by: 4) {
+            for c in 0..<3 { worst = max(worst, abs(Int(expected[i + c]) - Int(actual[i + c]))) }
+        }
+        row += rows
+    }
+    return worst
 }
 
 private func expandPhoto(input: URL, output: URL, percent: Int) throws {
@@ -162,15 +250,24 @@ private func expandPhoto(input: URL, output: URL, percent: Int) throws {
     let source = CIImage(cvPixelBuffer: buffer, options: [.colorSpace: srgb])
     let scaleY = CGFloat(geometry.modelHeight) / CGFloat(geometry.sourceHeight)
     let scaleX = CGFloat(geometry.modelWidth) / CGFloat(geometry.sourceWidth)
-    let modelPhoto = source.applyingFilter("CILanczosScaleTransform", parameters: [
+    let modelRect = CGRect(x: 0, y: 0, width: geometry.modelWidth, height: geometry.modelHeight)
+    // Materialize the model-resolution source once so the canvas the model sees
+    // and the pixels the compositor measures are the same raster.
+    guard let smallRaster = context.createCGImage(source.applyingFilter("CILanczosScaleTransform", parameters: [
         kCIInputScaleKey: scaleY, kCIInputAspectRatioKey: scaleX / scaleY
-    ]).cropped(to: CGRect(x: 0, y: 0, width: geometry.modelWidth, height: geometry.modelHeight))
+    ]).cropped(to: modelRect), from: modelRect, format: .RGBAh, colorSpace: srgb, deferred: false) else {
+        throw ExpansionError(message: "Could not prepare the model-resolution photo.")
+    }
+    let modelPhoto = CIImage(cgImage: smallRaster, options: [.colorSpace: srgb])
     let placedModelPhoto = modelPhoto.transformed(by: CGAffineTransform(translationX: CGFloat(geometry.modelPadX), y: CGFloat(geometry.modelPadY)))
-    let gray = CIImage(color: CIColor(red: 0.5, green: 0.5, blue: 0.5)).cropped(to: geometry.modelExtent)
-    let canvas = placedModelPhoto.composited(over: gray).cropped(to: geometry.modelExtent)
+    // The pipeline reads the pixels under its mask as a prior: a flat gray fill
+    // pulled the generated border toward gray and darkened it, while replicated
+    // edge pixels keep its color and lighting continuous with the photograph.
+    let fill = placedModelPhoto.clampedToExtent().cropped(to: geometry.modelExtent)
+    let canvas = placedModelPhoto.composited(over: fill).cropped(to: geometry.modelExtent)
     let white = CIImage(color: .white).cropped(to: geometry.modelExtent)
-    let black = CIImage(color: .black).cropped(to: geometry.modelSourceBox)
-    let borderMask = black.composited(over: white).cropped(to: geometry.modelExtent)
+    let keep = geometry.modelSourceBox.insetBy(dx: CGFloat(geometry.overlap), dy: CGFloat(geometry.overlap))
+    let borderMask = CIImage(color: .black).cropped(to: keep).composited(over: white).cropped(to: geometry.modelExtent)
 
     print("EXPANSION Loading installed Apple Fast Clean Up models")
     let loadStart = ProcessInfo.processInfo.systemUptime
@@ -187,8 +284,26 @@ private func expandPhoto(input: URL, output: URL, percent: Int) throws {
         throw ExpansionError(message: "Apple Fast Clean Up did not produce an expanded image.")
     }
     let inferenceSeconds = ProcessInfo.processInfo.systemUptime - inferenceStart
+
+    print("EXPANSION Matching border colors and blending the seam")
+    let compositeStart = ProcessInfo.processInfo.systemUptime
     let generatedRaster = CIImage(cgImage: raster, options: [.colorSpace: srgb])
-    let fullGenerated = generatedRaster.applyingFilter("CILanczosScaleTransform", parameters: [
+    let generatedPixels = readFloats(generatedRaster, extent: geometry.modelExtent, context: context, colorSpace: srgb)
+    let sourcePixels = readFloats(modelPhoto, extent: modelRect, context: context, colorSpace: srgb)
+    // Rows are top-down in these bitmaps, so the top padding is the model's top.
+    let matched = try harmonizeBorder(generated: generatedPixels, source: sourcePixels,
+                                      left: geometry.modelPadX, top: geometry.modelPadY, restoreInset: geometry.overlap)
+    var seamReport: [String: Any]? = nil
+    var modelCanvas = matched.image
+    if geometry.inset > 0 {
+        let blended = try blendOverlap(generated: matched.image, source: sourcePixels, left: geometry.modelPadX,
+                                       top: geometry.modelPadY, inset: geometry.inset, outerReach: SeamSettings.outerReach)
+        modelCanvas = blended.image
+        seamReport = blended.report
+    }
+    let compositeSeconds = ProcessInfo.processInfo.systemUptime - compositeStart
+
+    let fullGenerated = makeImage(modelCanvas, colorSpace: srgb).applyingFilter("CILanczosScaleTransform", parameters: [
         kCIInputScaleKey: geometry.restoreScaleY,
         kCIInputAspectRatioKey: geometry.restoreScaleX / geometry.restoreScaleY
     ]).transformed(by: CGAffineTransform(
@@ -196,10 +311,10 @@ private func expandPhoto(input: URL, output: URL, percent: Int) throws {
         y: CGFloat(geometry.padY) - CGFloat(geometry.modelPadY) * geometry.restoreScaleY
     )).cropped(to: geometry.outputExtent)
     let placedSource = source.transformed(by: CGAffineTransform(translationX: CGFloat(geometry.padX), y: CGFloat(geometry.padY)))
-    let blendMask = try sourceBlendMask(box: geometry.sourceBox, featherX: geometry.featherX,
-                                      featherY: geometry.featherY, extent: geometry.outputExtent)
+    let restoreMask = try sourceRestoreMask(box: geometry.sourceBox, featherX: geometry.featherX,
+                                            featherY: geometry.featherY, extent: geometry.outputExtent)
     let restored = placedSource.applyingFilter("CIBlendWithMask", parameters: [
-        kCIInputBackgroundImageKey: fullGenerated, kCIInputMaskImageKey: blendMask
+        kCIInputBackgroundImageKey: fullGenerated, kCIInputMaskImageKey: restoreMask
     ]).cropped(to: geometry.outputExtent)
 
     try fileManager.createDirectory(at: output, withIntermediateDirectories: true)
@@ -207,10 +322,16 @@ private func expandPhoto(input: URL, output: URL, percent: Int) throws {
     try fileManager.createDirectory(at: staging, withIntermediateDirectories: false)
     defer { try? fileManager.removeItem(at: staging) }
     print("EXPANSION Restoring full-resolution source and saving sRGB output")
-    try context.writePNGRepresentation(of: restored, to: staging.appendingPathComponent("expanded.png"), format: .RGBA8, colorSpace: srgb)
+    let stagedImage = staging.appendingPathComponent("expanded.png")
+    try context.writePNGRepresentation(of: restored, to: stagedImage, format: .RGBA8, colorSpace: srgb)
     let preserveInsetX = Int(ceil(geometry.featherX))
     let preserveInsetY = Int(ceil(geometry.featherY))
-    let report: [String: Any] = [
+    let interiorError = try verifyPreservedInterior(saved: stagedImage, source: source, geometry: geometry, insetX: preserveInsetX,
+                                                    insetY: preserveInsetY, context: context, colorSpace: srgb)
+    guard interiorError == 0 else {
+        throw ExpansionError(message: "Original-pixel preservation check failed (maximum error \(interiorError)); the expansion was not saved.")
+    }
+    var report: [String: Any] = [
         "schema": 1, "helper_protocol_version": expansionProtocolVersion,
         "status": "complete", "backend": expansionBackend, "identity": models.identity,
         "input": input.path, "percent_per_edge": percent,
@@ -224,17 +345,24 @@ private func expandPhoto(input: URL, output: URL, percent: Int) throws {
         "model_source_size": [geometry.modelWidth, geometry.modelHeight],
         "model_canvas_size": [Int(geometry.modelExtent.width), Int(geometry.modelExtent.height)],
         "model_padding_lrtb": [geometry.modelPadX, geometry.modelPadX, geometry.modelPadY, geometry.modelPadY],
-        "feather_model_pixels": 3,
+        "mask_fill": "edge-replicated source",
+        "generated_overlap_model_pixels": geometry.overlap,
+        "feather_model_pixels": geometry.inset,
         "feather_source_pixels_xy": [Double(geometry.featherX), Double(geometry.featherY)],
-        "preservation": "Full-resolution color-managed SDR sRGB source center; narrow inner seam blended with generated context",
+        "seam_blend": geometry.inset > 0 ? "multiband-generated-overlap" : "source-restore",
+        "border_color_match": matched.report,
+        "preservation": "Pixel-exact full-resolution color-managed SDR sRGB source interior; narrow inner band blended into color-matched generated overlap",
+        "preserved_interior_max_rgb_error": interiorError,
         "output_color_space": "sRGB", "color_metadata": colorMetadata,
-        "orientation_applied": true, "mask": "white new border; black source", "dilate_mask": false,
+        "orientation_applied": true, "mask": "white new border and overlap; black protected source", "dilate_mask": false,
         "model_load_seconds": loadSeconds, "inference_and_materialization_seconds": inferenceSeconds,
+        "seam_composite_seconds": compositeSeconds,
         "total_seconds": ProcessInfo.processInfo.systemUptime - start
     ]
+    if let seamReport { report["multiband_seam"] = seamReport }
     try writeJSON(report, to: staging.appendingPathComponent("expansion.json"))
     let finalImage = output.appendingPathComponent("expanded.png")
-    try fileManager.moveItem(at: staging.appendingPathComponent("expanded.png"), to: finalImage)
+    try fileManager.moveItem(at: stagedImage, to: finalImage)
     do {
         // The manifest is the completion marker. Never leave a claimed success
         // when saving either member of the output pair failed.

@@ -15,6 +15,7 @@ The build only compiles; it does not run a probe, load a model, or access Photos
 | `ServiceProbe IMAGE [OUTPUT] [--in-process]` | Investigates the earlier service route; it may fail entitlement checks and is not the app's working backend |
 | `InspectModels` | Loads installed cleanup models with the observed precompiled configuration and prints feature descriptions |
 | `LinkCheck` | Checks the exported cleanup call signatures and prints Swift layout metadata without inference |
+| `FillPriorProbe TRIP_EXPORT OUTPUT_DIR PERCENT FILL [OVERLAP]` | Runs the installed cleanup pipeline on a border canvas filled with gray, black, white, replicated or mirrored source pixels and prints the color step across each join |
 | `DumpRegistry` | Enumerates relevant runtime classes, selectors, and implementation locations without altering them |
 | `RuntimeProbe FRAMEWORK...` | Enumerates classes/method signatures in supplied installed private frameworks |
 | `ExtendCapabilityProbe` | Reads this process's OS-visible inference entitlement; no Photos access or model request |

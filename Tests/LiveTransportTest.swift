@@ -29,8 +29,11 @@ struct LiveTransportTest {
         playback.transitionDuration = 0.18
         playback.shuffleReplays = false
         var ready: Set<URL> = []
+        var evicted: Set<URL> = []
         var shown: [Int] = [], repeats = 0, finishes = 0, failures = 0
         playback.sceneIsReady = { _, url in ready.contains(url) }
+        // Synthetic scenes have no files; model eviction explicitly instead.
+        playback.replayIsAvailable = { url, _ in !evicted.contains(url) }
         playback.onItem = { shown.append($0) }
         playback.onReplay = { shown.append($0) }
         playback.onRepeat = { _ in repeats += 1 }
@@ -131,6 +134,28 @@ struct LiveTransportTest {
         playback.sceneFailed(slot: currentSlot(playback), url: scene(50), error: NSError(domain: "SyntheticScene", code: 2))
         wait("A failed startup scene must advance to a ready successor") { playback.displayedNumber == 51 }
         precondition(failures == 1, "Failed startup scene is reported once")
-        print("PASS live scene transport, readiness, mixed video, fades, pause, navigation, fairness and fallback")
+
+        // A bounded scene cache evicts photos that already played. Repeats must
+        // skip them without a visible failure, and an evicted unseen candidate
+        // must not keep the album open after production ends.
+        playback.begin(); shown = []; failures = 0; repeats = 0; finishes = 0
+        playback.sceneDuration = 0.25; playback.transitionDuration = 0.06
+        ready = Set((60...63).map(scene)); evicted = []
+        for number in 60...62 { playback.appendScene(scene(number), number: number) }
+        wait("First pass starts") { shown.count >= 1 }
+        // Evicted while still on screen: the loaded scene finishes its turn, but
+        // it must never be chosen again once the unseen photos have played.
+        evicted.insert(scene(60))
+        wait("First pass shows every new scene") { shown.count >= 3 }
+        wait("Repeats continue while production is open") { shown.count >= 9 }
+        precondition(shown.prefix(3) == [60, 61, 62] && !shown.dropFirst(3).contains(60), "An evicted scene must leave the repeat pool: \(shown)")
+        precondition(failures == 0, "Skipping an evicted repeat is not a playback failure")
+        evicted.insert(scene(63))
+        playback.addPreparedScenes([(scene(63), 63)])
+        playback.finishPreparing()
+        wait("An evicted unseen candidate cannot block finishing", timeout: 5) { finishes == 1 }
+        precondition(!shown.contains(63) && failures == 0, "Evicted unseen scenes are neither shown nor reported")
+        print("LIVE_EVICTION_SUCCESS evicted repeats skipped silently and album finished")
+        print("PASS live scene transport, readiness, mixed video, fades, pause, navigation, fairness, fallback and eviction")
     }
 }

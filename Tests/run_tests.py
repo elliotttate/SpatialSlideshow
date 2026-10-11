@@ -8,9 +8,9 @@ import sys
 import time
 from test_support import ROOT, TEST_ROOT, REPORTS, developer_environment, ensure_fixtures
 
-ALL = ["storage", "preparation", "motion", "cache", "persistent-cache", "video-cache",
+ALL = ["storage", "preparation", "motion", "expansion-compositor", "cache", "persistent-cache", "video-cache",
        "playback", "displayed-playback", "navigation", "fullscreen", "music", "display-sleep", "helper-process", "native-extend-recovery", "apple-model-setup", "runtime-installer", "screen-saver", "scene-cache", "live-transport", "live-renderer", "scene-window"]
-CORE = ALL[:6]
+CORE = ALL[:7]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--core", action="store_true", help="Skip WindowServer, audio-playback and power-assertion checks")
 parser.add_argument("--only", action="append", choices=ALL, help="Run one named check (repeatable)")
@@ -46,6 +46,7 @@ def commands(name):
         "live-transport": ("LiveTransportTest", ["ContinuousPlayback"], [str(fixtures / "playback-short.mp4")]),
         "screen-saver": ("ScreenSaverTest", ["ScreenSaverPlaylist", "ScreenSaverController", "SpatialScreenSaverView", "ContinuousPlayback"], [str(fixtures / "playback-screen-saver.mp4")]),
         "helper-process": ("HelperProcessTest", ["HelperProcess"], []),
+        "expansion-compositor": ("ExpansionCompositorTest", ["ExpansionCompositor"], []),
         "native-extend-recovery": ("NativeExtendRecoveryTest", ["NativeExtendRecovery"], []),
         "storage": ("StorageRecoveryTest", ["StorageRecovery", "AlbumPreparationQueue"], []),
         "preparation": ("AlbumPreparationQueueTest", ["AlbumPreparationQueue"], [str(REPORTS / "preparation.json")]),

@@ -30,6 +30,12 @@ final class ContinuousPlayback {
     var requiresDisplayReady = false
     /// Alternate renderers can gate transitions on an actually decoded frame.
     var frameIsReady: ((AVPlayerLayer) -> Bool)?
+    /// Repeats draw on earlier renders that a bounded cache may since have
+    /// evicted. An unavailable candidate leaves the pool silently instead of
+    /// failing on screen. Tests with synthetic URLs replace this check.
+    var replayIsAvailable: (URL, Bool) -> Bool = { url, isScene in
+        FileManager.default.fileExists(atPath: isScene ? url.appendingPathComponent("scene.json").path : url.path)
+    }
     /// A display-synchronized renderer can advance fades on its own frame clock.
     var usesExternalFrameClock = false
     /// Scene slots share ordering, transport and fades with the video slots.
@@ -386,19 +392,23 @@ final class ContinuousPlayback {
         let clip: Clip
         if let next = pending.first {
             clip = next; stagedIsReplay = false
-        } else if let unseen = chooseReplay(history.filter({ !shownNumbers.contains($0.number) })) {
-            clip = unseen; stagedIsReplay = true
         } else {
-            guard !productionFinished else { return }
-            let alternatives = history.filter { $0.number != currentClip?.number }
-            guard !alternatives.isEmpty else { return }
-            var remaining = alternatives.filter { !roundShownNumbers.contains($0.number) }
-            if remaining.isEmpty {
-                roundShownNumbers.removeAll()
-                remaining = alternatives
+            dropUnavailableReplays()
+            if let unseen = chooseReplay(history.filter({ !shownNumbers.contains($0.number) })) {
+                clip = unseen
+            } else {
+                guard !productionFinished else { return }
+                let alternatives = history.filter { $0.number != currentClip?.number }
+                guard !alternatives.isEmpty else { return }
+                var remaining = alternatives.filter { !roundShownNumbers.contains($0.number) }
+                if remaining.isEmpty {
+                    roundShownNumbers.removeAll()
+                    remaining = alternatives
+                }
+                guard let replay = chooseReplay(remaining) else { return }
+                clip = replay
             }
-            guard let replay = chooseReplay(remaining) else { return }
-            clip = replay; stagedIsReplay = true
+            stagedIsReplay = true
         }
         staged = clip
         stagedLoadedAt = CACurrentMediaTime()
@@ -407,6 +417,14 @@ final class ContinuousPlayback {
     }
     private func chooseReplay(_ candidates: [Clip]) -> Clip? {
         shuffleReplays ? candidates.randomElement() : candidates.first
+    }
+    /// The current photo is already loaded; every other history entry is a
+    /// future candidate whose media may have been evicted since it played.
+    /// Viewing history is kept: an evicted photo was still shown.
+    private func dropUnavailableReplays() {
+        history.removeAll { clip in
+            clip.number != currentClip?.number && !replayIsAvailable(clip.url, clip.isScene)
+        }
     }
     private func clearStaged() {
         incoming.cancelPendingPrerolls()
@@ -558,6 +576,9 @@ final class ContinuousPlayback {
     }
     private func reachedEnd() {
         if isTransitioning { return } // Keep the outgoing final frame during overlap.
+        // A candidate evicted since the last selection must not hold the album
+        // open as a phantom unseen photo; re-select before deciding to finish.
+        if !loopingMovie, staged == nil { preload() }
         if !loopingMovie, nextReady {
             if transitionDuration > 0 { transitionLength = transitionDuration; startTransition() }
             else { completeTransition() }

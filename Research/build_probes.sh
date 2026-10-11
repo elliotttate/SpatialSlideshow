@@ -10,6 +10,7 @@ xcrun swiftc -parse-as-library -I Stubs -L Stubs -lAlchemistService Research/Ref
 xcrun clang -fobjc-arc -framework Foundation Research/Reframe/AssetProbe.m -o "$out/AssetProbe"
 xcrun swiftc Research/Cleanup/InspectModels.swift -o "$out/InspectModels"
 xcrun swiftc -Onone -I Stubs -L Stubs -lPhotosGenerativeServices Research/Cleanup/LinkCheck.swift -o "$out/LinkCheck"
+xcrun swiftc -O -I Stubs -L Stubs -lPhotosGenerativeServices Research/Cleanup/FillPriorProbe.swift -o "$out/FillPriorProbe"
 xcrun clang -fobjc-arc -framework Foundation Research/Cleanup/DumpRegistry.m -o "$out/DumpRegistry"
 xcrun clang -fobjc-arc -framework Foundation Research/Cleanup/RuntimeProbe.m -o "$out/RuntimeProbe"
 xcrun clang -fobjc-arc -framework Foundation -framework Security Research/Extend/CapabilityProbe.m -o "$out/ExtendCapabilityProbe"

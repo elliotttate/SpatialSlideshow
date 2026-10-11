@@ -26,7 +26,9 @@ The app's `ExpandPhoto` helper uses `PhotosGenerativeServices.InpaintGANPipeline
 
 The observed Photos loading route uses `MLModelConfiguration.usePrecompiledE5Bundle` for the installed specialized models. Matching that configuration with `.all` compute units allowed direct local loading on the tested Mac. The helper builds an added-border mask and calls the exported image pipeline; it does not reconstruct Apple's internal preprocessing implementation.
 
-The generated result is materialized once, resized to the output canvas, and composited with the full-resolution color-managed original, retaining its interior with a narrow seam blend. A manifest records the extra area for the camera. Expansion adds room to move while camera framing compensates for the larger canvas. The optional zoom-out allowance lets the animation deliberately reveal more of the generated border.
+The installed inpainting model is a 512×512 four-channel network and the refinement model works at 1024×1024, so the result's effective resolution does not grow with the canvas. The pipeline also reads the pixels under its mask as a prior: a flat gray fill measurably darkened and desaturated the border, while the photo's replicated edge keeps it continuous. See [the seam notes](APPLE_CLEANUP_SEAM.md) for the fill comparison and the rejected per-edge tiling experiment.
+
+The generated result is materialized once, color-matched to the photo in OKLab, joined to the model-resolution source with a four-band blend, resized to the output canvas, and composited with the full-resolution color-managed original, whose interior beyond a narrow band is verified pixel-exact. A manifest records the extra area for the camera. Expansion adds room to move while camera framing compensates for the larger canvas. The optional zoom-out allowance lets the animation deliberately reveal more of the generated border.
 
 Generation can blur or invent details at the edges, especially at larger amounts. The Photos library is never edited. Generated images, scene buffers, and output clips remain local application data.
 

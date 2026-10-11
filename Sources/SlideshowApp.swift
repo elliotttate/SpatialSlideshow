@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 final class SlideshowModel: ObservableObject {
     @Published var photos: [URL] = []
-    @Published var realtimeRendering = UserDefaults.standard.bool(forKey: "realtimeRendering") {
+    @Published var realtimeRendering = UserDefaults.standard.object(forKey: "realtimeRendering") as? Bool ?? true {
         didSet { UserDefaults.standard.set(realtimeRendering, forKey: "realtimeRendering") }
     }
     @Published private(set) var usingRealtime = false
@@ -17,12 +17,12 @@ final class SlideshowModel: ObservableObject {
         if usingRealtime { playback.sceneDuration = seconds }
         screenSaver.updateLiveSettings(usingRealtime ? liveSettings : nil)
     }
-    @Published var seconds = UserDefaults.standard.object(forKey: "seconds") as? Double ?? 9.0 { didSet { UserDefaults.standard.set(seconds, forKey: "seconds") ; updateLiveSettings() } }
-    @Published var motion = UserDefaults.standard.object(forKey: "motion") as? Double ?? 1.8 { didSet { UserDefaults.standard.set(motion, forKey: "motion") ; updateLiveSettings() } }
+    @Published var seconds = UserDefaults.standard.object(forKey: "seconds") as? Double ?? 8.0 { didSet { UserDefaults.standard.set(seconds, forKey: "seconds") ; updateLiveSettings() } }
+    @Published var motion = UserDefaults.standard.object(forKey: "motion") as? Double ?? 1.75 { didSet { UserDefaults.standard.set(motion, forKey: "motion") ; updateLiveSettings() } }
     @Published var framing = FramingMode(rawValue: UserDefaults.standard.string(forKey: "framing") ?? "fit") ?? .fit { didSet { UserDefaults.standard.set(framing.rawValue, forKey: "framing") } }
     @Published var motionStyle = MotionStyle(rawValue: UserDefaults.standard.object(forKey: "motionStyle") as? Int ?? -1) ?? .varied { didSet { UserDefaults.standard.set(motionStyle.rawValue, forKey: "motionStyle") ; updateLiveSettings() } }
     @Published var photoVersion = PhotoVersion(rawValue: UserDefaults.standard.string(forKey: "photoVersion") ?? "original") ?? .original { didSet { UserDefaults.standard.set(photoVersion.rawValue, forKey: "photoVersion") } }
-    @Published var expandPhotoEdges = UserDefaults.standard.bool(forKey: "expandPhotoEdges") { didSet { UserDefaults.standard.set(expandPhotoEdges, forKey: "expandPhotoEdges") } }
+    @Published var expandPhotoEdges = UserDefaults.standard.object(forKey: "expandPhotoEdges") as? Bool ?? true { didSet { UserDefaults.standard.set(expandPhotoEdges, forKey: "expandPhotoEdges") } }
     @Published var expansionBackend = ExpansionBackend(rawValue: UserDefaults.standard.string(forKey: "expansionBackend") ?? "appleCleanup") ?? .appleCleanup { didSet { UserDefaults.standard.set(expansionBackend.rawValue, forKey: "expansionBackend") } }
     @Published var kleinPythonPath = UserDefaults.standard.string(forKey: "kleinPythonPath") ?? "" { didSet { UserDefaults.standard.set(kleinPythonPath, forKey: "kleinPythonPath") } }
     @Published var showResearchBackends = UserDefaults.standard.bool(forKey: "showResearchBackends") { didSet { UserDefaults.standard.set(showResearchBackends, forKey: "showResearchBackends") } }
@@ -35,13 +35,13 @@ final class SlideshowModel: ObservableObject {
     private var setupTask: RenderSession?
     var kleinRuntimeConfigured: Bool { KleinRuntime.pythonURL(override: kleinPythonPath) != nil }
     var drawThingsRuntimeConfigured: Bool { DrawThingsRuntime.pythonURL() != nil }
-    @Published var expansionPercent = min(20, max(1, UserDefaults.standard.object(forKey: "expansionPercent") as? Int ?? 5)) { didSet { UserDefaults.standard.set(expansionPercent, forKey: "expansionPercent") } }
-    @Published var expansionZoomOutPercent = min(40, max(0, UserDefaults.standard.object(forKey: "expansionZoomOutPercent") as? Int ?? 0)) { didSet { UserDefaults.standard.set(expansionZoomOutPercent, forKey: "expansionZoomOutPercent") ; updateLiveSettings() } }
+    @Published var expansionPercent = min(20, max(1, UserDefaults.standard.object(forKey: "expansionPercent") as? Int ?? 10)) { didSet { UserDefaults.standard.set(expansionPercent, forKey: "expansionPercent") } }
+    @Published var expansionZoomOutPercent = min(40, max(0, UserDefaults.standard.object(forKey: "expansionZoomOutPercent") as? Int ?? 5)) { didSet { UserDefaults.standard.set(expansionZoomOutPercent, forKey: "expansionZoomOutPercent") ; updateLiveSettings() } }
     var effectiveExpansionZoomOutPercent: Int { min(expansionPercent * 2, expansionZoomOutPercent) }
     @Published var outputLongEdge = UserDefaults.standard.object(forKey: "outputLongEdge") as? Int ?? 3840 { didSet { UserDefaults.standard.set(outputLongEdge, forKey: "outputLongEdge") ; updateLiveSettings() } }
     @Published var crossfade = UserDefaults.standard.object(forKey: "crossfade") as? Bool ?? true { didSet { UserDefaults.standard.set(crossfade, forKey: "crossfade"); playback.transitionDuration = crossfade ? 0.8 : 0 } }
     @Published var shuffleAlbum = UserDefaults.standard.object(forKey: "shuffleAlbum") as? Bool ?? true { didSet { UserDefaults.standard.set(shuffleAlbum, forKey: "shuffleAlbum") } }
-    @Published var includeVideos = UserDefaults.standard.bool(forKey: "includeVideos") { didSet { UserDefaults.standard.set(includeVideos, forKey: "includeVideos") } }
+    @Published var includeVideos = UserDefaults.standard.object(forKey: "includeVideos") as? Bool ?? true { didSet { UserDefaults.standard.set(includeVideos, forKey: "includeVideos") } }
     @Published var videoSound = UserDefaults.standard.object(forKey: "videoSound") as? Bool ?? true { didSet { UserDefaults.standard.set(videoSound, forKey: "videoSound"); playback.audioEnabled = videoSound } }
     @Published var busy = false
     @Published var albumPlaying = false

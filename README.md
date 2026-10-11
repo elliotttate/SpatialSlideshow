@@ -4,7 +4,7 @@
 
 A native Mac slideshow that turns photos into moving 3D scenes using the **actual Apple Photos Reframe models** and Apple's Gaussian renderer. Browse a Photos album, press Play, and let it prepare the remaining items while the slideshow runs.
 
-**0.9.0 is available for Apple Silicon and macOS 27.** The private frameworks and models are only verified on the development machine's macOS 27 installation. Other OS builds or hardware may behave differently. See the [release notes](Docs/RELEASE_NOTES_0.9.0.md) for realtime playback, interactive camera controls, and screen saver support.
+**0.10.0 is available for Apple Silicon and macOS 27.** The private frameworks and models are only verified on the development machine's macOS 27 installation. Other OS builds or hardware may behave differently. See the [release notes](Docs/RELEASE_NOTES_0.10.0.md) for the improved Apple edge expansion, repeat handling, and new defaults.
 
 ## Requirements
 
@@ -32,29 +32,29 @@ The app starts with previously prepared album items while new downloads begin. I
 ## Settings
 
 - **Playback:** fill the screen or fit with black bars; optional fades between photos; video sound.
-- **Real-time 3D:** animate cached Gaussian scenes directly on the GPU. Off by default; see below.
+- **Real-time 3D:** animate cached Gaussian scenes directly on the GPU. On by default; see below.
 - **Screen Saver:** select a prepared slideshow and install the native macOS screen saver. See setup below.
 - **Camera movement:** time per photo, motion strength from 0.25× to 4×, and varied or fixed left/right, push-in, pull-back, diagonal, or vertical paths. Above 2×, movement curves into an elliptical orbit; from 2.5× it completes a full circle instead of retracing the outbound path, and higher strength widens the loop. Expansion zoom follows the orbit. Existing motion up to 2× stays unchanged; older higher-strength clips are regenerated with the new path.
 - **Photo edge expansion:** choose **Apple Fast Clean Up**, **FLUX.2 Klein · MLX**, or **FLUX · Draw Things** to add 1–20% on each edge. Apple is the faster default. The two FLUX engines run locally with automatically installed models; Draw Things uses four-step FLUX.2 Klein 4B. The original composition stays close in view; extra surroundings provide space for movement. Larger extensions can soften or invent edge details. All three options retain the original full-resolution center outside a narrow blended seam.
 - **Maximum zoom out:** an optional expansion override. Zero keeps the original framing behavior. Raising it lets the camera reveal more generated surroundings, up to twice the per-edge expansion percentage (40% with 20% expansion). The actual motion also follows the strength setting.
-- **Apple Photos Extend:** an additional expansion choice for the temporary research setup above. Preserves the original photo, saves expanded stills for reuse, and follows the same expansion and zoom controls. New installations retain the existing expansion-off default.
+- **Apple Photos Extend:** an additional expansion choice for the temporary research setup above. Preserves the original photo, saves expanded stills for reuse, and follows the same expansion and zoom controls. New installations use Apple Fast Clean Up expansion.
 - **Album:** shuffle and optionally include full-length videos. Live Photos use their still image. Video timing is independent of photo duration.
 - **Photo quality:** full-quality latest edits or full-quality unedited originals, both with iCloud downloads; 1920 or 3840 pixels on the output's long edge.
 - **Music:** local audio playlist, play/pause, skip, volume, and repeat. Music is played live and is not mixed into exported MP4s.
 
-New installations start with **9 seconds, Strong motion, Varied movement, Fit with Black Bars, shuffle and fades on, full-quality unedited originals at 3840 pixels**, and videos and expansion off. Existing saved preferences are retained. Enabling expansion starts with 5% per edge and no extra zoom-out allowance unless those values were previously changed.
+New installations start with **8 seconds, Strong (1.75×) Varied movement, Fit with Black Bars, shuffle and fades on, videos included, Real-time 3D rendering on, Apple Fast Clean Up expansion at 10% per edge with a 5% zoom-out allowance, and full-quality unedited originals at 3840 pixels**. Existing saved preferences are retained.
 
 ### Real-time 3D
 
-Enable **Settings → Playback → Real-time 3D rendering**, then play or restart an album or file slideshow. This uses the same Apple Reframe scene and camera paths as clip generation, with a display-synchronized 60 fps target. New photos need inference once but skip movie encoding. Changing movement, duration, framing, output resolution or zoom-out does not regenerate the scene. Varied movement chooses a new path on each visit. Videos continue playing normally; cached movies can play while scenes prepare and act as fallbacks when available. Turn this option off to build and export an MP4.
+**Settings → Playback → Real-time 3D rendering** is on for new installations; after changing it, play or restart an album or file slideshow. This uses the same Apple Reframe scene and camera paths as clip generation, with a display-synchronized 60 fps target. New photos need inference once but skip movie encoding. Changing movement, duration, framing, output resolution or zoom-out does not regenerate the scene. Varied movement chooses a new path on each visit. Videos continue playing normally; cached movies can play while scenes prepare and act as fallbacks when available. Turn this option off to build and export an MP4.
 
-Scenes persist in `Scene Cache/` with a 4 GiB least-recently-used limit, independent of camera settings. Original revisions, Photos source version, expansion backend/amount and inference pipeline version invalidate the scene. Current, incoming and up to six prepared-ahead scenes are protected from eviction; preparation waits at that limit, including while paused. Pausing reuses the displayed GPU frame instead of repeatedly drawing splats. Older unprotected scenes can be evicted and regenerated on a later play. Existing movie caches are kept; movies cannot reconstruct the original splats.
+Scenes persist in `Scene Cache/` with a 4 GiB least-recently-used limit, independent of camera settings. Original revisions, Photos source version, expansion backend/amount and inference pipeline version invalidate the scene. Current, incoming and up to six prepared-ahead scenes are protected from eviction; preparation waits at that limit, including while paused. Pausing reuses the displayed GPU frame instead of repeatedly drawing splats. Older unprotected scenes can be evicted and regenerated on a later play; a repeat that would land on an evicted scene is skipped silently rather than reported. Existing movie caches are kept; movies cannot reconstruct the original splats.
 
 While a live photo is paused, **drag over the image**, **scroll with two fingers**, or hold **W/A/S/D** to explore its 3D viewpoint. W/S move up/down and A/D left/right. Movement stays within a bounded range, does not advance the photo's timeline, and needs no new inference. Releasing the controls holds that view; Space resumes with a smooth return to the slideshow path. Changing photos resets the manual offset. This applies to live scenes; videos and cached movie fallbacks pause normally.
 
 The screen saver inherits this mode when you choose **Use This Slideshow** (or replay its already selected album with the option enabled). Update its installed component after updating the app. It loads cached scenes independently, never runs inference, and falls back to a matching prepared clip when one is available. A missing scene without a clip is skipped with diagnostics.
 
-Real-time rendering uses more sustained GPU work than video decoding. It targets 60 fps, with live fades temporarily limited to a 1920-pixel long edge to leave room for two moving scenes; single scenes use the selected resolution up to 3840 pixels. Actual frame rate depends on the Mac, display and other GPU work. Regular clip playback remains the default.
+Real-time rendering uses more sustained GPU work than video decoding. It targets 60 fps, with live fades temporarily limited to a 1920-pixel long edge to leave room for two moving scenes; single scenes use the selected resolution up to 3840 pixels. Actual frame rate depends on the Mac, display and other GPU work. Turn it off to return to regular clip playback.
 
 ### Use as a macOS screen saver
 
@@ -87,6 +87,8 @@ FLUX and Apple expansion clips have separate cache identities. FLUX also saves c
 
 FLUX's generated borders are matched to the source in perceptual color space before the full-resolution original is restored. This reduces purple/white-balance seams without tinting the original. The color-matching version is part of the cache identity, so earlier uncorrected expansions and clips are not replayed with the corrected pipeline. Invented scenery and structural joins can still differ from the photo.
 
+Apple Fast Clean Up borders go through the same treatment. The model reads the pixels under its mask as a prior, so the helper fills the new border with the photo's replicated edge instead of flat gray, lets the model repaint a thin band inside the photo, matches the border to the photo in perceptual OKLab, and joins the two with a multiband seam before restoring the exact full-resolution interior. This Apple processing revision has a new cache identity, so earlier Apple expansions and clips are regenerated when needed. See [the Apple seam notes](Docs/APPLE_CLEANUP_SEAM.md) for measurements and limits.
+
 The Draw Things option has its own expanded-still cache in `Expanded Photos/Draw Things FLUX/`. It uses a local server bound to loopback, started when a new expansion is needed. The app keeps it available between requests and stops it after ten idle minutes or when quitting. Cancellation stops an active owned generation. Its photo-expansion stage has a six-minute outer timeout. A changed expansion engine never reuses another engine's generated border. The three-photo M3 Max trial took approximately 16–30 seconds per expansion at the test resolution; a cold full-resolution Trip integration test took 51 seconds for expansion and compositing. Downloads, Apple Reframe and movie rendering add time. Border geometry and focus can still be imperfect.
 
 Draw Things asks for a wider view of the same scene without emphasizing bokeh or blur. Its mask overlaps the original by 12 model pixels. Color correction continues through that boundary, and a multiband blend joins fine detail over an 18-model-pixel inner band while spreading lighting changes up to 64 model pixels into the generated border. At the normal 768-pixel model size, the inner band occupies about 2.3% of the source's long edge per side. The rest of the original stays pixel-exact; no whole-photo blur or extra Apple/cloud inference is applied. This processing revision has a new cache identity, so earlier expansions are regenerated when needed. See [the seam comparison](Docs/DRAWTHINGS_SEAM_REPAIR.md) for tested alternatives and limitations.
@@ -116,7 +118,7 @@ Python 3 and `ffmpeg`/`ffprobe` are needed only for tests. Test patterns, solid-
 
 ```sh
 ./test.sh                  # All synthetic tests; requires a logged-in desktop session
-./test.sh --core           # Queue, storage, camera math, and photo/video cache tests
+./test.sh --core           # Queue, storage, camera math, expansion seam, and photo/video cache tests
 ./test.sh --only navigation
 ```
 
@@ -136,7 +138,7 @@ This optional test runs the actual expansion → Reframe → render pipeline, te
 ./Scripts/package_release.sh
 ```
 
-This creates `dist/SpatialSlideshow-0.9.0-macOS-arm64.zip` and its SHA-256 file. It does not tag, publish, or upload anything. Set `SPATIAL_APP_OUTPUT` to build a separate release bundle without replacing a running development app. The archive contains the app, icon, and helper executables; Apple frameworks and models remain system dependencies.
+This creates `dist/SpatialSlideshow-0.10.0-macOS-arm64.zip` and its SHA-256 file. It does not tag, publish, or upload anything. Set `SPATIAL_APP_OUTPUT` to build a separate release bundle without replacing a running development app. The archive contains the app, icon, and helper executables; Apple frameworks and models remain system dependencies.
 
 For distribution, sign and notarize a copy of the built app using your Developer ID Application certificate and an existing `notarytool` Keychain profile:
 

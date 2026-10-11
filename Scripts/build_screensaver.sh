@@ -20,8 +20,8 @@ cat > "$saver/Contents/Info.plist" <<PLIST
 <key>CFBundleName</key><string>Spatial Slideshow</string>
 <key>CFBundleExecutable</key><string>SpatialScreenSaver</string>
 <key>CFBundlePackageType</key><string>BNDL</string>
-<key>CFBundleShortVersionString</key><string>${SPATIAL_VERSION:-0.9.0}</string>
-<key>CFBundleVersion</key><string>${SPATIAL_BUILD:-900}</string>
+<key>CFBundleShortVersionString</key><string>${SPATIAL_VERSION:-0.10.0}</string>
+<key>CFBundleVersion</key><string>${SPATIAL_BUILD:-1000}</string>
 <key>CFBundleIconFile</key><string>SpatialSlideshow.icns</string>
 <key>LSMinimumSystemVersion</key><string>27.0</string>
 <key>NSPrincipalClass</key><string>SpatialSlideshowScreenSaverView</string>

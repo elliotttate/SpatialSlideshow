@@ -10,6 +10,7 @@ Requirements: Apple Silicon macOS 27, full Xcode with a macOS 27 SDK, Python 3, 
 | `helper-process` | Live output/progress, bounded timeout, termination of unresponsive children, cancellation, and retained failure logs |
 | `preparation` | Slow-first bypass, eventual inclusion, bounded prefetch, failure, and cleanup |
 | `motion` | Camera compatibility, complete high-strength orbits, expansion compensation, and zoom-out bounds |
+| `expansion-compositor` | Apple Fast Clean Up seam compositor on synthetic images: OKLab border matching through corners and the overlap band, multiband continuity, retained border texture, exact interior, and geometry rejection |
 | `cache` | Exact photo-cache identity and stable movement across process launches |
 | `persistent-cache` | Replay variants, revision/expansion isolation, and process restart |
 | `video-cache` | Synthetic SDR/HDR exports, orientation, audio, edits, cancellation, and restart |
@@ -23,14 +24,14 @@ Requirements: Apple Silicon macOS 27, full Xcode with a macOS 27 SDK, Python 3, 
 | `apple-model-setup` | Missing, incomplete, unique, and ambiguous installed Apple model sets using synthetic directories |
 | `screen-saver` | Playlist updates, persistence, source selection, missing media, live/clip fallback reconciliation, silent playback, and composited frame retention |
 | `scene-cache` | Scene validation, atomic storage, corruption recovery, eviction, leases, cancellation, and cross-process reuse |
-| `live-transport` | Scene readiness, pause, timing, transitions, navigation, and mixed-media fallback |
+| `live-transport` | Scene readiness, pause, timing, transitions, navigation, mixed-media fallback, and silent skipping of evicted repeat candidates |
 | `live-renderer` | GPU motion and fades, black-frame detection, paused frame reuse, mouse/WASD camera input, smooth resume, navigation, and clip fallbacks |
 | `scene-window` | Bounded scene preparation, protected ahead-of-playback files, capacity wake-up, and cancellation |
 | `runtime-installer` | Download integrity, environment isolation, installation locks, cancellation, and reuse without model downloads |
 
-Run a subset with repeated `--only NAME` arguments. `--core` runs the first six checks. Reports are in `build/tests/reports/`; compiler/runtime logs are in `build/tests/logs/`. These outputs may include local paths and must not be committed. Synthetic fixture provenance is recorded in `build/tests/fixtures/provenance.json`.
+Run a subset with repeated `--only NAME` arguments. `--core` runs the first seven checks. Reports are in `build/tests/reports/`; compiler/runtime logs are in `build/tests/logs/`. These outputs may include local paths and must not be committed. Synthetic fixture provenance is recorded in `build/tests/fixtures/provenance.json`.
 
-The full native suite contains 21 checks. Run all Python suites in the managed Draw Things Python 3.12 environment (or a Python 3.12 environment with `Scripts/drawthings-requirements.lock` installed) using `python -m unittest discover -s Tests -p 'test_*.py'`. NumPy and Pillow alone are sufficient for the Klein image tests, but the complete suite also requires the pinned Draw Things client. This includes `test_runtime_setup.py`, which uses small local HTTP fixtures to test resumed downloads, integrity checks, registration preservation, process groups, and package repair without downloading model weights.
+The full native suite contains 22 checks. Run all Python suites in the managed Draw Things Python 3.12 environment (or a Python 3.12 environment with `Scripts/drawthings-requirements.lock` installed) using `python -m unittest discover -s Tests -p 'test_*.py'`. NumPy and Pillow alone are sufficient for the Klein image tests, but the complete suite also requires the pinned Draw Things client. This includes `test_runtime_setup.py`, which uses small local HTTP fixtures to test resumed downloads, integrity checks, registration preservation, process groups, and package repair without downloading model weights.
 
 `python3 Tests/run_runtime_installer_test.py --bootstrap-integration` explicitly downloads the pinned 25 MB portable Python archive into a temporary directory with spaces and verifies TLS/imports, reuse, invalid receipt repair, and broken interpreter repair. Repairs download another copy. This needs network access but does not install model weights or access the Photos library. See [the first-launch audit](FIRST_LAUNCH_AUDIT.md) for the limits of isolated-runtime tests on a development Mac.
 

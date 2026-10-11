@@ -4,15 +4,15 @@ cd "$(dirname "$0")"
 source Scripts/common.sh
 spatial_select_xcode
 
-version="${SPATIAL_VERSION:-0.9.0}"
-build_number="${SPATIAL_BUILD:-900}"
+version="${SPATIAL_VERSION:-0.10.0}"
+build_number="${SPATIAL_BUILD:-1000}"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$build_number" =~ ^[0-9]+$ ]] || { echo 'Invalid version/build number' >&2; exit 1; }
 app="${SPATIAL_APP_OUTPUT:-$PWD/build/Spatial Slideshow.app}"
 helpers="$PWD/build/Helpers"
 mkdir -p "$helpers" "$app/Contents/MacOS" "$app/Contents/Resources"
 swift_flags=(-O -parse-as-library -target arm64-apple-macos27.0 -file-prefix-map "$PWD=.")
 xcrun swiftc "${swift_flags[@]}" -I Stubs -L Stubs -lAlchemistBase Sources/GenerateScene.swift Sources/ColorManagedImage.swift Sources/AppleModelLocations.swift -o "$helpers/GenerateScene"
-xcrun swiftc "${swift_flags[@]}" -I Stubs -L Stubs -lPhotosGenerativeServices Sources/ExpandPhoto.swift Sources/ColorManagedImage.swift Sources/AppleModelLocations.swift -o "$helpers/ExpandPhoto"
+xcrun swiftc "${swift_flags[@]}" -I Stubs -L Stubs -lPhotosGenerativeServices Sources/ExpandPhoto.swift Sources/ExpansionCompositor.swift Sources/ColorManagedImage.swift Sources/AppleModelLocations.swift -o "$helpers/ExpandPhoto"
 xcrun clang -O2 -target arm64-apple-macos27.0 -fobjc-arc -fmodules -framework Foundation Sources/AppleModelSetup.m -o "$helpers/AppleModelSetup"
 xcrun swiftc "${swift_flags[@]}" Sources/PrepareExpansionPhoto.swift Sources/ColorManagedImage.swift -o "$helpers/PrepareExpansionPhoto"
 xcrun clang++ -O2 -std=c++17 -target arm64-apple-macos27.0 -ffile-prefix-map="$PWD=." -fobjc-arc -framework Foundation -framework Metal -framework CoreImage -framework CoreGraphics -framework AVFoundation -framework CoreVideo -framework CoreMedia Sources/RenderSlideshow.mm -o "$helpers/RenderSlideshow"

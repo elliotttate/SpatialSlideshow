@@ -153,7 +153,7 @@ struct PhotoExpansionConfiguration {
         guard candidates.count == 1, let model = candidates.first else {
             throw failure("Apple’s Fast Clean Up models are unavailable. Open Clean Up in Photos to download them, or turn off Expand Photo Edges.")
         }
-        var identity = "cleanup-composite-v1|" + ProcessInfo.processInfo.operatingSystemVersionString + "|" + model.path
+        var identity = "cleanup-composite-v2|" + ProcessInfo.processInfo.operatingSystemVersionString + "|" + model.path
         for file in [helper, model.appendingPathComponent("metadata.json"),
                      model.appendingPathComponent("inpainting.mlmodelc/coremldata.bin"),
                      model.appendingPathComponent("refinement.mlmodelc/coremldata.bin")] {
